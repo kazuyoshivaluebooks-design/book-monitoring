@@ -153,24 +153,29 @@ export async function GET(request: NextRequest) {
       const itemCount = $('li.bd-booklist-item-book').length
       const bodyClasses = $('body').attr('class') || 'none'
       const title = $('title').text()
-      const htmlSnippet = html.substring(0, 2000)
-      // Check for any list items
-      const allLi = $('li').length
-      const allSection = $('section').length
-      const hasBooklist = html.includes('bd-booklist')
-      const hasListBody = html.includes('booklist-listbody')
+      // Check for hanmotocom-data script tag (contains book list as JSON)
+      const dataScript = $('#hanmotocom-data').html()
+      let hanmotoData = null
+      let bookListCount = 0
+      let firstBooks: Array<{ isbn: string; uniq: string }> = []
+      if (dataScript) {
+        try {
+          hanmotoData = JSON.parse(dataScript)
+          const list = hanmotoData?.booklist?.list || []
+          bookListCount = list.length
+          firstBooks = list.slice(0, 5).map((b: { isbn: string; uniq: string }) => ({ isbn: b.isbn, uniq: b.uniq }))
+        } catch { /* ignore */ }
+      }
       return NextResponse.json({
         url: testUrl,
         status: res.status,
         htmlLength: html.length,
         pageTitle: title,
-        bodyClasses,
-        itemCount,
-        allLi,
-        allSection,
-        hasBooklist,
-        hasListBody,
-        htmlSnippet,
+        hasHanmotoData: !!dataScript,
+        hanmotoDataLength: dataScript?.length || 0,
+        bookListCount,
+        firstBooks,
+        terms: hanmotoData?.booklist?.terms || null,
       })
     } catch (e) {
       return NextResponse.json({ error: String(e) }, { status: 500 })
