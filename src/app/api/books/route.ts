@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 
+export const dynamic = 'force-dynamic'
+
 // GET: 書籍一覧取得 / ISBNs取得 / Upsert
 // action=isbns → 登録済みISBN一覧
 // action=upsert → 書籍upsert（スケジュールタスク用）
