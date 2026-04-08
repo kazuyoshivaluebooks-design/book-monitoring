@@ -11,6 +11,16 @@ export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams
   const action = searchParams.get('action')
 
+  // デバッグ: actionパラメータの確認
+  if (action === 'debug') {
+    return NextResponse.json({
+      action,
+      url: request.url,
+      nextUrl: request.nextUrl.toString(),
+      allParams: Object.fromEntries(searchParams.entries()),
+    })
+  }
+
   // === action=isbns: 登録済みISBN一覧 ===
   if (action === 'isbns') {
     const { data, error } = await supabase
