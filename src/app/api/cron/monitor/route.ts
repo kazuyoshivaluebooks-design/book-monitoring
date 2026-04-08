@@ -21,107 +21,106 @@ const EXCLUDED_CCODE_PREFIXES = ['8', '97', '87']
 function shouldExclude(title: string, cCode: string | null, genre: string | null): boolean {
   const text = `${title} ${genre || ''}`.toLowerCase()
   if (EXCLUDED_KEYWORDS.some(kw => text.includes(kw.toLowerCase()))) return true
-  if (cCode && EXCLUDED_CCODE_PREFIXES.some(p => cCode.startsWith(p))) return true
+  if (cCode) {
+    // Cコード先頭が 8（雑誌）、97（コミック）、87（児童向けコミック）
+    if (EXCLUDED_CCODE_PREFIXES.some(p => cCode.startsWith(p))) return true
+    // Cコード2桁目が 7 = コミック（C_7__）、8 = 雑誌（C_8__）
+    if (cCode.length === 4 && (cCode[1] === '7' || cCode[1] === '8')) return true
+  }
   return false
 }
 
-// 版元ドットコムの近刊ページをスクレイプ
-async function fetchHanmotoBooks(page = 1): Promise<Array<{
+type BookData = {
   title: string
   author: string
   publisher: string
   isbn: string | null
   releaseDate: string | null
   cCode: string | null
-}>> {
-  const url = page === 1
-    ? 'https://www.hanmoto.com/bd/search/order/firing/dkey1/near'
-    : `https://www.hanmoto.com/bd/search/order/firing/dkey1/near/page/${page}`
+  genre: string | null
+  price: number | null
+}
+
+// 版元ドットコムの新刊・近刊ページをスクレイプ
+async function fetchHanmotoBooks(path: string): Promise<BookData[]> {
+  const url = `https://www.hanmoto.com${path}`
 
   const res = await fetch(url, {
     headers: {
-      'User-Agent': 'Mozilla/5.0 (compatible; BookMonitor/1.0)',
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'ja,en;q=0.9',
     },
-    signal: AbortSignal.timeout(8000),
+    signal: AbortSignal.timeout(15000),
   })
 
-  if (!res.ok) throw new Error(`hanmoto.com returned ${res.status}`)
+  if (!res.ok) throw new Error(`hanmoto.com returned ${res.status} for ${path}`)
 
   const html = await res.text()
   const $ = cheerio.load(html)
-  const books: Array<{
-    title: string
-    author: string
-    publisher: string
-    isbn: string | null
-    releaseDate: string | null
-    cCode: string | null
-  }> = []
+  const books: BookData[] = []
 
-  // 版元ドットコムの検索結果をパース
-  // 各書籍は .result-item や .book-list-item 等の要素にある
-  $('div.block--booksearch-data, div.result-item, tr.even, tr.odd, .book-data').each((_i, el) => {
+  // 各書籍は li.bd-booklist-item-book
+  $('li.bd-booklist-item-book').each((_i, el) => {
     const $el = $(el)
-    const text = $el.text()
 
-    // タイトル取得
-    const titleEl = $el.find('a[href*="/bd/isbn/"], h3, .title, td:first-child a')
-    let title = titleEl.first().text().trim()
+    // タイトル取得: .book-title h4 span（ルビ読みをカッコ内で除去）
+    const titleSpan = $el.find('.book-title h4 span').first()
+    const title = titleSpan.text().replace(/\s*[（(][^）)]*[）)]\s*/g, '').trim()
     if (!title) return
 
-    // 著者取得
-    const authorText = $el.find('.author, td:nth-child(2)').first().text().trim()
-    const author = authorText || ''
+    // 著者取得: .book-author 要素（ルビ読みをカッコ内で除去）
+    const authorEls = $el.find('.book-author')
+    const authors = authorEls.map((_j, a) =>
+      $(a).text().replace(/\s*[（(][^）)]*[）)]\s*/g, '').trim()
+    ).get().filter(Boolean)
+    const author = authors.join(', ')
+    if (!author) return
 
-    // 出版社取得
-    const publisherText = $el.find('.publisher, td:nth-child(3)').first().text().trim()
-    const publisher = publisherText || ''
+    // 出版社取得: .book-publishers のテキストから「発行：」を除去
+    const pubText = $el.find('.book-publishers').text()
+    const publisher = pubText
+      .replace(/発行[：:]\s*/, '')
+      .replace(/\s*[（(][^）)]*[）)]\s*/g, '')
+      .replace(/会員の本/g, '')
+      .trim()
 
-    // ISBN取得
-    const isbnMatch = text.match(/(?:ISBN[:\s]?)?(97[89][-\s]?\d{1,5}[-\s]?\d{1,7}[-\s]?\d{1,7}[-\s]?\d)/)
-    const isbn = isbnMatch ? isbnMatch[1].replace(/[-\s]/g, '') : null
+    // ISBN取得: タイトルリンクの href（/bd/isbn/XXXXX）
+    const titleLink = $el.find('.bd-list-book-col-contents > a').first()
+    const href = titleLink.attr('href') || ''
+    const isbnFromHref = href.match(/\/bd\/isbn\/(\d{13})/)
+    let isbn = isbnFromHref ? isbnFromHref[1] : null
+    // フォールバック: テキストからISBNを探す
+    if (!isbn) {
+      const fullText = $el.text()
+      const isbnMatch = fullText.match(/ISBN[：:\s]*([0-9-]+)/)
+      if (isbnMatch) {
+        isbn = isbnMatch[1].replace(/[-\s]/g, '')
+        if (isbn.length !== 13) isbn = null
+      }
+    }
 
-    // 発売日取得
-    const dateMatch = text.match(/(\d{4})[年\/\-](\d{1,2})[月\/\-](\d{1,2})/)
+    // Cコード取得
+    const fullText = $el.text()
+    const cCodeMatch = fullText.match(/Cコード[：:\s]*(\d{4})/)
+    const cCode = cCodeMatch ? cCodeMatch[1] : null
+
+    // ジャンル取得
+    const genreEl = $el.find('.book-mark-genre')
+    const genre = genreEl.text().trim() || null
+
+    // 発売日取得: 「書店発売日:」パターン
+    const dateMatch = fullText.match(/書店発売日[：:\s]*(\d{4})年(\d{1,2})月(\d{1,2})日/)
     const releaseDate = dateMatch
       ? `${dateMatch[1]}-${dateMatch[2].padStart(2, '0')}-${dateMatch[3].padStart(2, '0')}`
       : null
 
-    // Cコード取得
-    const cCodeMatch = text.match(/C(\d{4})/)
-    const cCode = cCodeMatch ? cCodeMatch[1] : null
+    // 価格取得: 「定価:」パターン
+    const priceMatch = fullText.match(/定価[：:\s]*([\d,]+)円/)
+    const price = priceMatch ? parseInt(priceMatch[1].replace(/,/g, ''), 10) : null
 
-    if (title && author) {
-      books.push({ title, author, publisher, isbn, releaseDate, cCode })
-    }
+    books.push({ title, author, publisher, isbn, releaseDate, cCode, genre, price })
   })
-
-  // もしパースできなかった場合、テキストベースのフォールバック
-  if (books.length === 0) {
-    // ページ全体からリンク付き書籍を探す
-    $('a[href*="/bd/isbn/"]').each((_i, el) => {
-      const title = $(el).text().trim()
-      if (title && title.length > 2 && title.length < 100) {
-        const parentText = $(el).closest('tr, div, li').text()
-        const authorMatch = parentText.match(/(?:著|著者|作)[：:\s]*([^\s,、]+(?:\s+[^\s,、]+)?)/)
-        const author = authorMatch ? authorMatch[1] : ''
-        const pubMatch = parentText.match(/(?:出版社|版元)[：:\s]*([^\s,、]+)/)
-        const publisher = pubMatch ? pubMatch[1] : ''
-        const isbnMatch = parentText.match(/(97[89]\d{10})/)
-        const isbn = isbnMatch ? isbnMatch[1] : null
-        const dateMatch = parentText.match(/(\d{4})[年\/\-](\d{1,2})[月\/\-](\d{1,2})/)
-        const releaseDate = dateMatch
-          ? `${dateMatch[1]}-${dateMatch[2].padStart(2, '0')}-${dateMatch[3].padStart(2, '0')}`
-          : null
-        const cCodeMatch = parentText.match(/C(\d{4})/)
-        const cCode = cCodeMatch ? cCodeMatch[1] : null
-
-        if (title && author) {
-          books.push({ title, author, publisher, isbn, releaseDate, cCode })
-        }
-      }
-    })
-  }
 
   return books
 }
@@ -146,19 +145,40 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    // 1. 版元ドットコムから書籍を取得（1ページ目）
-    let allBooks: Awaited<ReturnType<typeof fetchHanmotoBooks>> = []
-    try {
-      allBooks = await fetchHanmotoBooks(1)
-      results.scrapedBooks = allBooks.length
-    } catch (e) {
-      results.errors.push(`版元ドットコム取得エラー: ${e instanceof Error ? e.message : String(e)}`)
+    // 1. 版元ドットコムから書籍を取得
+    //    - 本日発売の本 + 明日発売の本 + 1週間以内に発売される本
+    let allBooks: BookData[] = []
+    const paths = [
+      '/bd/shinkan/today',      // 本日発売
+      '/bd/kinkan/tomorrow',    // 明日発売
+      '/bd/kinkan/7days',       // 1週間以内に発売
+    ]
+    for (const path of paths) {
+      try {
+        const books = await fetchHanmotoBooks(path)
+        allBooks.push(...books)
+      } catch (e) {
+        results.errors.push(`取得エラー (${path}): ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+
+    // ISBN でユニーク化（同じ本が複数リストに出る可能性）
+    const seen = new Set<string>()
+    allBooks = allBooks.filter(book => {
+      const key = book.isbn || `${book.title}|${book.author}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    results.scrapedBooks = allBooks.length
+
+    if (allBooks.length === 0 && results.errors.length > 0) {
       return NextResponse.json(results, { status: 500 })
     }
 
     // 2. ジャンルフィルタリング
     const filteredBooks = allBooks.filter(book => {
-      if (shouldExclude(book.title, book.cCode, null)) {
+      if (shouldExclude(book.title, book.cCode, book.genre)) {
         results.filteredOut++
         return false
       }
@@ -200,8 +220,10 @@ export async function GET(request: NextRequest) {
           author: book.author,
           publisher: book.publisher || null,
           isbn: book.isbn,
+          price: book.price,
           release_date: book.releaseDate,
           c_code: book.cCode,
+          genre: book.genre,
           rank: null,
           status: '未対応',
           sns_data: {},
