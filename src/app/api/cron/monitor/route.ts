@@ -134,6 +134,49 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  // デバッグモード: ?debug=1 でHTMLの一部を返す
+  const debug = request.nextUrl.searchParams.get('debug')
+  if (debug) {
+    try {
+      const testPath = '/bd/shinkan/today'
+      const testUrl = `https://www.hanmoto.com${testPath}`
+      const res = await fetch(testUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'ja,en;q=0.9',
+        },
+        signal: AbortSignal.timeout(15000),
+      })
+      const html = await res.text()
+      const $ = cheerio.load(html)
+      const itemCount = $('li.bd-booklist-item-book').length
+      const bodyClasses = $('body').attr('class') || 'none'
+      const title = $('title').text()
+      const htmlSnippet = html.substring(0, 2000)
+      // Check for any list items
+      const allLi = $('li').length
+      const allSection = $('section').length
+      const hasBooklist = html.includes('bd-booklist')
+      const hasListBody = html.includes('booklist-listbody')
+      return NextResponse.json({
+        url: testUrl,
+        status: res.status,
+        htmlLength: html.length,
+        pageTitle: title,
+        bodyClasses,
+        itemCount,
+        allLi,
+        allSection,
+        hasBooklist,
+        hasListBody,
+        htmlSnippet,
+      })
+    } catch (e) {
+      return NextResponse.json({ error: String(e) }, { status: 500 })
+    }
+  }
+
   const startTime = Date.now()
   const results = {
     scrapedBooks: 0,
