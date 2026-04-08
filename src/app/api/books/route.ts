@@ -8,7 +8,7 @@ export const dynamic = 'force-dynamic'
 // action=upsert → 書籍upsert（スケジュールタスク用）
 // それ以外 → 通常の書籍一覧
 export async function GET(request: NextRequest) {
-  const { searchParams } = new URL(request.url)
+  const searchParams = request.nextUrl.searchParams
   const action = searchParams.get('action')
 
   // === action=isbns: 登録済みISBN一覧 ===
