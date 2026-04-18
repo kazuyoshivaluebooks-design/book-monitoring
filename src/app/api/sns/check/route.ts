@@ -177,21 +177,10 @@ async function getPendingCount(): Promise<number> {
 }
 
 
-// GET: 未調査の書籍を自動処理
+// GET: 未調査の書籍を処理（cron または手動呼び出し）
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url)
-  const limit = parseInt(searchParams.get('limit') || '5', 10)
-  const isChain = searchParams.get('chain') === 'true'
-  const depth = parseInt(searchParams.get('depth') || '0', 10)
-  const MAX_CHAIN_DEPTH = 120  // 最大120回チェーン（5冊×120=600冊カバー）
-
-  // cron認証
-  const authHeader = request.headers.get('authorization')
-  const cronSecret = process.env.CRON_SECRET
-  if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
-    // 認証なしの場合は limit を 1 に制限（手動テスト用）
-    // return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+  const limit = parseInt(searchParams.get('limit') || '3', 10)
 
   try {
     // SNS未調査の書籍を取得
@@ -202,18 +191,18 @@ export async function GET(request: NextRequest) {
       .eq('sns_data', '{}')
       .not('evaluation_reason', 'like', '%SNS調査スキップ%')
       .order('release_date', { ascending: true, nullsFirst: false })
-      .limit(Math.min(limit, 20))
+      .limit(Math.min(limit, 10))
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 })
     }
 
     if (!pendingBooks || pendingBooks.length === 0) {
+      const remaining = await getPendingCount()
       return NextResponse.json({
         message: 'SNS未調査の書籍はありません（全件処理完了）',
         processed: 0,
-        remaining: 0,
-        chainDepth: depth,
+        remaining,
       })
     }
 
@@ -223,7 +212,7 @@ export async function GET(request: NextRequest) {
     let idx = 0
 
     while (idx < pendingBooks.length) {
-      if (Date.now() - startTime > 6000) break  // チェーン用に余裕を残す
+      if (Date.now() - startTime > 8000) break
 
       const batch = pendingBooks.slice(idx, idx + PARALLEL)
       const batchResults = await Promise.allSettled(
@@ -238,30 +227,9 @@ export async function GET(request: NextRequest) {
 
     const remaining = await getPendingCount()
 
-    // チェーン: 残りがあれば次のバッチを自動実行
-    // awaitするがAbortで即座に制御を返す（リクエスト送信だけ確保）
-    const baseUrl = new URL(request.url).origin
-    let chained = false
-    if (isChain && remaining > 0 && depth < MAX_CHAIN_DEPTH) {
-      try {
-        const controller = new AbortController()
-        setTimeout(() => controller.abort(), 800)
-        await fetch(
-          `${baseUrl}/api/sns/check?limit=${limit}&chain=true&depth=${depth + 1}`,
-          { signal: controller.signal }
-        )
-        chained = true
-      } catch {
-        // AbortError は想定内（リクエストは送信済み）
-        chained = true
-      }
-    }
-
     return NextResponse.json({
       processed: results.length,
       remaining,
-      chainDepth: depth,
-      chained,
       results,
       elapsedMs: Date.now() - startTime,
     })

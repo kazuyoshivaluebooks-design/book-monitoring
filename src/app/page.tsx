@@ -360,12 +360,58 @@ export default function Dashboard() {
     }
   }
 
+  // --- SNS 一括調査 ---
+  const [snsRunning, setSnsRunning] = useState(false)
+  const [snsProgress, setSnsProgress] = useState({ processed: 0, remaining: 0, errors: 0 })
+  const snsAbort = useState<AbortController | null>(null)
+
+  const startSnsBatch = useCallback(async () => {
+    if (snsRunning) return
+    setSnsRunning(true)
+    setSnsProgress({ processed: 0, remaining: 0, errors: 0 })
+    const controller = new AbortController()
+    snsAbort[1](controller)
+    let totalProcessed = 0
+    let errors = 0
+
+    try {
+      while (!controller.signal.aborted) {
+        const res = await fetch('/api/sns/check?limit=3', { signal: controller.signal })
+        const data = await res.json()
+        totalProcessed += data.processed || 0
+        if (data.results) {
+          errors += data.results.filter((r: { error?: string }) => r.error).length
+        }
+        setSnsProgress({ processed: totalProcessed, remaining: data.remaining || 0, errors })
+
+        if (data.remaining === 0 || data.processed === 0) break
+
+        // 少し待ってから次のバッチ（API負荷軽減）
+        await new Promise(r => setTimeout(r, 2000))
+      }
+    } catch {
+      // AbortError or network error
+    } finally {
+      setSnsRunning(false)
+      fetchBooks()  // 完了後にリストを更新
+    }
+  }, [snsRunning, fetchBooks, snsAbort])
+
+  const stopSnsBatch = useCallback(() => {
+    snsAbort[0]?.abort()
+  }, [snsAbort])
+
   const stats = {
     total: books.length,
     highProb: books.filter(b => b.rank === '高確率').length,
     midProb: books.filter(b => b.rank === '中確率').length,
     pending: books.filter(b => b.status === '未対応').length,
     ordered: books.filter(b => b.status === '仕入済').length,
+    noSns: books.filter(b => {
+      const sd = b.sns_data
+      return (!sd || typeof sd !== 'object' || Object.keys(sd).length === 0) &&
+        (!b.evaluation_reason || !b.evaluation_reason.includes('スキップ'))
+    }).length,
   }
 
   return (
@@ -377,12 +423,34 @@ export default function Dashboard() {
               <h1 className="text-lg font-bold text-gray-900">新刊モニタリング</h1>
               <p className="text-xs text-gray-500">著者SNS影響力による予約100冊見込み書籍</p>
             </div>
-            <div className="flex gap-4 text-xs text-gray-500">
+            <div className="flex items-center gap-4 text-xs text-gray-500">
               <span>全{stats.total}件</span>
               <span className="text-red-600">高確率 {stats.highProb}</span>
               <span className="text-orange-600">中確率 {stats.midProb}</span>
               <span>未対応 {stats.pending}</span>
               <span className="text-green-600">仕入済 {stats.ordered}</span>
+              {stats.noSns > 0 && !snsRunning && (
+                <button
+                  onClick={startSnsBatch}
+                  className="ml-2 px-3 py-1 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors text-xs font-medium"
+                >
+                  SNS調査開始（残{stats.noSns}冊）
+                </button>
+              )}
+              {snsRunning && (
+                <div className="flex items-center gap-2 ml-2">
+                  <div className="animate-spin w-3 h-3 border-2 border-indigo-500 border-t-transparent rounded-full" />
+                  <span className="text-indigo-600 font-medium">
+                    調査中... {snsProgress.processed}冊完了 / 残{snsProgress.remaining}冊
+                  </span>
+                  <button
+                    onClick={stopSnsBatch}
+                    className="px-2 py-0.5 bg-gray-200 text-gray-600 rounded hover:bg-gray-300 text-xs"
+                  >
+                    停止
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>
