@@ -5,8 +5,8 @@
       "schedule": "0 23 * * 0-4"
     },
     {
-      "path": "/api/sns/check?limit=5",
-      "schedule": "*/15 * * * *"
+      "path": "/api/sns/check?limit=5&chain=true",
+      "schedule": "0 20 * * *"
     }
   ]
 }

@@ -163,10 +163,37 @@ export async function POST(request: NextRequest) {
   }
 }
 
+/**
+ * 未調査書籍の残数を取得
+ */
+async function getPendingCount(): Promise<number> {
+  const { count } = await supabase
+    .from('books')
+    .select('id', { count: 'exact', head: true })
+    .is('rank', null)
+    .eq('sns_data', '{}')
+    .not('evaluation_reason', 'like', '%SNS調査スキップ%')
+  return count || 0
+}
+
+/**
+ * チェーン呼び出し: 残りがあれば自身を再度呼び出す（fire-and-forget）
+ * Vercel Hobby プランは cron 1日1回制限なので、
+ * 自己チェーンで連鎖的に全書籍を処理する
+ */
+function triggerNextChain(baseUrl: string, limit: number, depth: number) {
+  const url = `${baseUrl}/api/sns/check?limit=${limit}&chain=true&depth=${depth}`
+  // fire-and-forget: レスポンスを待たない
+  fetch(url).catch(() => {})
+}
+
 // GET: 未調査の書籍を自動処理
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url)
   const limit = parseInt(searchParams.get('limit') || '5', 10)
+  const isChain = searchParams.get('chain') === 'true'
+  const depth = parseInt(searchParams.get('depth') || '0', 10)
+  const MAX_CHAIN_DEPTH = 120  // 最大120回チェーン（5冊×120=600冊カバー）
 
   // cron認証
   const authHeader = request.headers.get('authorization')
@@ -178,7 +205,6 @@ export async function GET(request: NextRequest) {
 
   try {
     // SNS未調査の書籍を取得
-    // rank が null かつ sns_data が空（{} or null）で、スキップ済みでないもの
     const { data: pendingBooks, error } = await supabase
       .from('books')
       .select('id, title, author, evaluation_reason')
@@ -186,7 +212,7 @@ export async function GET(request: NextRequest) {
       .eq('sns_data', '{}')
       .not('evaluation_reason', 'like', '%SNS調査スキップ%')
       .order('release_date', { ascending: true, nullsFirst: false })
-      .limit(Math.min(limit, 20))  // 最大20件まで
+      .limit(Math.min(limit, 20))
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 })
@@ -194,18 +220,19 @@ export async function GET(request: NextRequest) {
 
     if (!pendingBooks || pendingBooks.length === 0) {
       return NextResponse.json({
-        message: 'SNS未調査の書籍はありません',
+        message: 'SNS未調査の書籍はありません（全件処理完了）',
         processed: 0,
+        remaining: 0,
+        chainDepth: depth,
       })
     }
 
     const startTime = Date.now()
     const results = []
-    const PARALLEL = 2  // 2冊同時処理
+    const PARALLEL = 2
     let idx = 0
 
     while (idx < pendingBooks.length) {
-      // Vercel Hobby Plan 10秒制限のバッファ
       if (Date.now() - startTime > 7000) break
 
       const batch = pendingBooks.slice(idx, idx + PARALLEL)
@@ -219,17 +246,19 @@ export async function GET(request: NextRequest) {
       idx += PARALLEL
     }
 
-    // 未調査の残数を別クエリで取得
-    const { count } = await supabase
-      .from('books')
-      .select('id', { count: 'exact', head: true })
-      .is('rank', null)
-      .eq('sns_data', '{}')
-      .not('evaluation_reason', 'like', '%SNS調査スキップ%')
+    const remaining = await getPendingCount()
+
+    // チェーン: 残りがあれば次のバッチを自動実行（fire-and-forget）
+    const baseUrl = new URL(request.url).origin
+    if (isChain && remaining > 0 && depth < MAX_CHAIN_DEPTH) {
+      triggerNextChain(baseUrl, limit, depth + 1)
+    }
 
     return NextResponse.json({
       processed: results.length,
-      remaining: (count || 0) - results.length,
+      remaining,
+      chainDepth: depth,
+      willChain: isChain && remaining > 0 && depth < MAX_CHAIN_DEPTH,
       results,
       elapsedMs: Date.now() - startTime,
     })
