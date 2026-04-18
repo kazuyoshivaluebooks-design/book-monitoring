@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { after } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import { searchYouTubeAuthor } from '@/lib/sns/youtube'
 import { searchSocialProfiles } from '@/lib/sns/social-search'
@@ -176,16 +177,6 @@ async function getPendingCount(): Promise<number> {
   return count || 0
 }
 
-/**
- * チェーン呼び出し: 残りがあれば自身を再度呼び出す（fire-and-forget）
- * Vercel Hobby プランは cron 1日1回制限なので、
- * 自己チェーンで連鎖的に全書籍を処理する
- */
-function triggerNextChain(baseUrl: string, limit: number, depth: number) {
-  const url = `${baseUrl}/api/sns/check?limit=${limit}&chain=true&depth=${depth}`
-  // fire-and-forget: レスポンスを待たない
-  fetch(url).catch(() => {})
-}
 
 // GET: 未調査の書籍を自動処理
 export async function GET(request: NextRequest) {
@@ -248,10 +239,17 @@ export async function GET(request: NextRequest) {
 
     const remaining = await getPendingCount()
 
-    // チェーン: 残りがあれば次のバッチを自動実行（fire-and-forget）
+    // チェーン: 残りがあれば次のバッチを自動実行
+    // after() はレスポンス送信後に実行されるので確実にチェーンが発火する
     const baseUrl = new URL(request.url).origin
     if (isChain && remaining > 0 && depth < MAX_CHAIN_DEPTH) {
-      triggerNextChain(baseUrl, limit, depth + 1)
+      after(async () => {
+        // 少し待ってからチェーン（API負荷分散）
+        await new Promise(r => setTimeout(r, 1000))
+        await fetch(
+          `${baseUrl}/api/sns/check?limit=${limit}&chain=true&depth=${depth + 1}`
+        ).catch(() => {})
+      })
     }
 
     return NextResponse.json({
