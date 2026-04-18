@@ -2,6 +2,16 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import * as cheerio from 'cheerio'
 
+// 日付ヘルパー: YYYY-MM-DD
+function toDateStr(date: Date): string {
+  return date.toISOString().split('T')[0]
+}
+function addDays(date: Date, days: number): Date {
+  const d = new Date(date)
+  d.setDate(d.getDate() + days)
+  return d
+}
+
 export const dynamic = 'force-dynamic'
 export const maxDuration = 10 // Vercel Hobby: 10s
 
@@ -47,34 +57,60 @@ type HanmotoListItem = {
 }
 
 // ==============================
-// Step 1: 版元ドットコムから ISBN + uniq リストを取得
-// HTML 内の <script id="hanmotocom-data"> を解析（最初の1ページ20件）
+// Step 1: 版元ドットコムの query.json API で ISBN リストを取得
+// POST /bd/list/query.json で日付範囲・offset・rowmax を指定
 // ==============================
+async function fetchHanmotoByDateRange(
+  from: string, to: string, offset = 0, rowmax = 100
+): Promise<HanmotoListItem[]> {
+  const url = 'https://www.hanmoto.com/bd/list/query.json'
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+      'Accept': 'application/json',
+      'Referer': 'https://www.hanmoto.com/bd/kinkan/60days',
+      'Origin': 'https://www.hanmoto.com',
+    },
+    body: JSON.stringify({
+      conds: { salesdate: { from, to } },
+      categoryname: 'kinkan/60days',
+      part: 'kinkan/60days',
+      offset,
+      rowmax,
+    }),
+    signal: AbortSignal.timeout(10000),
+  })
+  if (!res.ok) throw new Error(`query.json returned ${res.status}`)
+
+  const json = await res.json()
+  if (!json.result) throw new Error(`query.json error: ${json.error?.message || 'unknown'}`)
+
+  const list: HanmotoListItem[] = json.data?.list || []
+  return list.filter(item => !!item.isbn && item.isbn.length === 13)
+}
+
+// 旧方式のHTMLスクレイピング（フォールバック用）
 async function fetchHanmotoList(path: string): Promise<HanmotoListItem[]> {
   const url = `https://www.hanmoto.com${path}`
   const res = await fetch(url, {
     headers: {
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'ja,en;q=0.9',
     },
-    signal: AbortSignal.timeout(15000),
+    signal: AbortSignal.timeout(10000),
   })
   if (!res.ok) throw new Error(`hanmoto.com returned ${res.status} for ${path}`)
-
   const html = await res.text()
   const $ = cheerio.load(html)
-
   const dataScript = $('#hanmotocom-data').html()
   if (!dataScript) return []
-
   try {
     const data = JSON.parse(dataScript)
     const list: HanmotoListItem[] = data?.booklist?.list || []
     return list.filter(item => !!item.isbn && item.isbn.length === 13)
-  } catch {
-    return []
-  }
+  } catch { return [] }
 }
 
 // ==============================
@@ -253,15 +289,27 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    // 1. 版元ドットコムから ISBN + uniq リストを収集（60日先まで）
-    // 60daysにtoday/tomorrow/30daysの全てが含まれるので、並列で2パスに絞る
-    const paths = [
-      '/bd/shinkan/today',       // 本日発売（60daysに含まれないことがある）
-      '/bd/kinkan/60days',       // 60日以内に発売
+    // 1. 版元ドットコムの query.json API で ISBN リストを収集（90日先まで）
+    // 30日区間×3バッチ + 本日発売を並列取得（各最大100件）
+    const today = new Date()
+    const dateRanges = [
+      { from: toDateStr(today), to: toDateStr(addDays(today, 30)) },         // 0-30日
+      { from: toDateStr(addDays(today, 31)), to: toDateStr(addDays(today, 60)) },  // 31-60日
+      { from: toDateStr(addDays(today, 61)), to: toDateStr(addDays(today, 90)) },  // 61-90日
     ]
 
     const allItems = new Map<string, HanmotoListItem>() // isbn → item (重複排除)
-    const listResults = await Promise.allSettled(paths.map(p => fetchHanmotoList(p)))
+
+    // query.json API と HTMLスクレイピング(today)を並列実行
+    const fetches = [
+      ...dateRanges.map(r => fetchHanmotoByDateRange(r.from, r.to, 0, 100)),
+      fetchHanmotoList('/bd/shinkan/today'), // 本日発売（フォールバック）
+    ]
+    const listResults = await Promise.allSettled(fetches)
+    const labels = [
+      ...dateRanges.map(r => `query ${r.from}~${r.to}`),
+      'today HTML',
+    ]
     for (let i = 0; i < listResults.length; i++) {
       const r = listResults[i]
       if (r.status === 'fulfilled') {
@@ -269,7 +317,7 @@ export async function GET(request: NextRequest) {
           if (!allItems.has(item.isbn)) allItems.set(item.isbn, item)
         })
       } else {
-        results.errors.push(`リスト取得エラー (${paths[i]}): ${r.reason}`)
+        results.errors.push(`リスト取得エラー (${labels[i]}): ${r.reason}`)
       }
     }
     results.scrapedItems = allItems.size
