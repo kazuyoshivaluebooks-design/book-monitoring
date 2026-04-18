@@ -219,47 +219,62 @@ type OpenBDInfo = {
   publisher: string | null
 }
 
+async function fetchOpenBDBatch(batch: string[]): Promise<Map<string, OpenBDInfo>> {
+  const result = new Map<string, OpenBDInfo>()
+  if (batch.length === 0) return result
+  try {
+    const res = await fetch(`https://api.openbd.jp/v1/get?isbn=${batch.join(',')}`, {
+      signal: AbortSignal.timeout(8000),
+    })
+    if (!res.ok) return result
+
+    const data: (OpenBDBook | null)[] = await res.json()
+    for (const item of data) {
+      if (!item?.summary?.isbn) continue
+      const isbn = item.summary.isbn
+
+      let cCode: string | null = null
+      let genre: string | null = null
+      const subjects = item.onix?.DescriptiveDetail?.Subject || []
+      for (const subj of subjects) {
+        if (subj.SubjectSchemeIdentifier === '78' && subj.SubjectCode) cCode = subj.SubjectCode
+        if (subj.SubjectSchemeIdentifier === '79' && subj.SubjectCode) genre = subj.SubjectCode
+      }
+
+      let pubdate: string | null = null
+      if (item.summary.pubdate && item.summary.pubdate.length === 8) {
+        const p = item.summary.pubdate
+        pubdate = `${p.slice(0, 4)}-${p.slice(4, 6)}-${p.slice(6, 8)}`
+      }
+
+      result.set(isbn, {
+        cCode, genre, pubdate,
+        title: item.summary.title || null,
+        author: item.summary.author || null,
+        publisher: item.summary.publisher || null,
+      })
+    }
+  } catch {
+    // continue
+  }
+  return result
+}
+
+// 複数バッチを並列実行
 async function fetchOpenBDInfo(isbns: string[]): Promise<Map<string, OpenBDInfo>> {
   const result = new Map<string, OpenBDInfo>()
   if (isbns.length === 0) return result
 
   const batchSize = 100
+  const batches: string[][] = []
   for (let i = 0; i < isbns.length; i += batchSize) {
-    const batch = isbns.slice(i, i + batchSize)
-    try {
-      const res = await fetch(`https://api.openbd.jp/v1/get?isbn=${batch.join(',')}`, {
-        signal: AbortSignal.timeout(15000),
-      })
-      if (!res.ok) continue
+    batches.push(isbns.slice(i, i + batchSize))
+  }
 
-      const data: (OpenBDBook | null)[] = await res.json()
-      for (const item of data) {
-        if (!item?.summary?.isbn) continue
-        const isbn = item.summary.isbn
-
-        let cCode: string | null = null
-        let genre: string | null = null
-        const subjects = item.onix?.DescriptiveDetail?.Subject || []
-        for (const subj of subjects) {
-          if (subj.SubjectSchemeIdentifier === '78' && subj.SubjectCode) cCode = subj.SubjectCode
-          if (subj.SubjectSchemeIdentifier === '79' && subj.SubjectCode) genre = subj.SubjectCode
-        }
-
-        let pubdate: string | null = null
-        if (item.summary.pubdate && item.summary.pubdate.length === 8) {
-          const p = item.summary.pubdate
-          pubdate = `${p.slice(0, 4)}-${p.slice(4, 6)}-${p.slice(6, 8)}`
-        }
-
-        result.set(isbn, {
-          cCode, genre, pubdate,
-          title: item.summary.title || null,
-          author: item.summary.author || null,
-          publisher: item.summary.publisher || null,
-        })
-      }
-    } catch {
-      // continue
+  const results = await Promise.allSettled(batches.map(b => fetchOpenBDBatch(b)))
+  for (const r of results) {
+    if (r.status === 'fulfilled') {
+      for (const [k, v] of r.value) result.set(k, v)
     }
   }
   return result
@@ -300,12 +315,16 @@ export async function GET(request: NextRequest) {
 
     const allItems = new Map<string, HanmotoListItem>() // isbn → item (重複排除)
 
-    // query.json API と HTMLスクレイピング(today)を並列実行
+    // query.json API + 既存書籍リストを並列取得（Supabaseは高速なので先に取る）
     const fetches = [
       ...dateRanges.map(r => fetchHanmotoByDateRange(r.from, r.to, 0, 100)),
       fetchHanmotoList('/bd/shinkan/today'), // 本日発売（フォールバック）
     ]
-    const listResults = await Promise.allSettled(fetches)
+    const [listResults, existingBooksResult] = await Promise.all([
+      Promise.allSettled(fetches),
+      supabase.from('books').select('id, isbn, title, author, release_date'),
+    ])
+
     const labels = [
       ...dateRanges.map(r => `query ${r.from}~${r.to}`),
       'today HTML',
@@ -326,23 +345,19 @@ export async function GET(request: NextRequest) {
       return NextResponse.json(results, { status: 500 })
     }
 
-    // 2. openBD API でジャンル・Cコード・発売日を一括取得（並列実行）
-    const allIsbns = Array.from(allItems.keys())
-    const [openBDMap, existingBooksResult] = await Promise.all([
-      fetchOpenBDInfo(allIsbns),
-      supabase.from('books').select('id, isbn, title, author, release_date'),
-    ])
-    // openBDResolved は実際に登録に使った件数をカウント（下のループで加算）
-
-    // 3. 既存書籍の確認（Step 2で並列取得済み）
+    // 2. 既存書籍のISBN/タイトルセットを構築
     const existingBooks = existingBooksResult.data
-
     const existingIsbns = new Map<string, { id: string; release_date: string | null }>()
     const existingTitles = new Set<string>()
     for (const b of (existingBooks || [])) {
       if (b.isbn) existingIsbns.set(b.isbn, { id: b.id, release_date: b.release_date })
       existingTitles.add(`${b.title}|${b.author}`)
     }
+
+    // 3. 未登録ISBNのみ抽出してopenBDを取得（大幅に高速化）
+    const unknownIsbns = Array.from(allItems.keys()).filter(isbn => !existingIsbns.has(isbn))
+    const openBDMap = await fetchOpenBDInfo(unknownIsbns)
+    // openBDResolved は実際に登録に使った件数をカウント（下のループで加算）
 
     // 4. 各書籍を処理
     for (const [isbn, item] of allItems) {
@@ -363,18 +378,8 @@ export async function GET(request: NextRequest) {
         continue
       }
 
-      // 4b. 既存チェック
-      const existingByIsbn = existingIsbns.get(isbn)
-      if (existingByIsbn) {
-        // 既存書籍に release_date が欠損 → openBDのpubdateで補完（高速）
-        if (!existingByIsbn.release_date && obInfo?.pubdate) {
-          try {
-            await supabase.from('books').update({ release_date: obInfo.pubdate }).eq('id', existingByIsbn.id)
-            results.updatedReleaseDate++
-          } catch {
-            // ignore
-          }
-        }
+      // 4b. 既存チェック（ISBNで高速判定、openBDは未登録分のみ取得済み）
+      if (existingIsbns.has(isbn)) {
         results.alreadyExists++
         continue
       }
