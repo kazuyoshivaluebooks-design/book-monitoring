@@ -332,7 +332,7 @@ export async function GET(request: NextRequest) {
       fetchOpenBDInfo(allIsbns),
       supabase.from('books').select('id, isbn, title, author, release_date'),
     ])
-    results.openBDResolved = openBDMap.size
+    // openBDResolved は実際に登録に使った件数をカウント（下のループで加算）
 
     // 3. 既存書籍の確認（Step 2で並列取得済み）
     const existingBooks = existingBooksResult.data
@@ -387,51 +387,49 @@ export async function GET(request: NextRequest) {
         continue
       }
 
-      // 4c. 新規書籍 → 版元ドットコムの個別詳細APIから発売日を取得
+      // 4c. 新規書籍の登録
+      // openBD にタイトル情報があればそのまま使う（高速）
+      // 発売日が未取得でも登録し、fix-dates バッチで後から補完する
       let bookData: BookData
-      try {
-        const detail = await fetchHanmotoBookDetail(item)
-        if (detail) {
-          results.hanmotoResolved++
-          bookData = {
-            title: detail.title,
-            author: detail.author,
-            publisher: detail.publisher,
-            isbn: detail.isbn,
-            releaseDate: detail.releaseDate || obInfo?.pubdate || null,
-            cCode,
-            genre,
-            price: detail.price,
-          }
-        } else if (obInfo?.title) {
-          // 版元ドットコム詳細取得失敗 → openBD フォールバック
-          bookData = {
-            title: obInfo.title,
-            author: obInfo.author || '',
-            publisher: obInfo.publisher || '',
-            isbn,
-            releaseDate: obInfo.pubdate,
-            cCode,
-            genre,
-            price: null,
-          }
-        } else {
-          // 両方失敗 → スキップ
-          continue
+      if (obInfo?.title) {
+        // openBD で十分な情報がある → 個別ページ取得をスキップ（高速化）
+        bookData = {
+          title: obInfo.title,
+          author: obInfo.author || '',
+          publisher: obInfo.publisher || '',
+          isbn,
+          releaseDate: obInfo.pubdate,
+          cCode,
+          genre,
+          price: null,
         }
-      } catch {
-        if (obInfo?.title) {
-          bookData = {
-            title: obInfo.title,
-            author: obInfo.author || '',
-            publisher: obInfo.publisher || '',
-            isbn,
-            releaseDate: obInfo.pubdate,
-            cCode,
-            genre,
-            price: null,
+        results.openBDResolved++
+      } else {
+        // openBD にデータがない → 版元ドットコム個別ページから取得
+        const elapsed2 = Date.now() - startTime
+        if (elapsed2 > 7000) {
+          // 個別ページ取得は重いのでタイムアウト間近なら中断
+          results.errors.push('タイムアウト間近のため個別取得を中断')
+          break
+        }
+        try {
+          const detail = await fetchHanmotoBookDetail(item)
+          if (detail) {
+            results.hanmotoResolved++
+            bookData = {
+              title: detail.title,
+              author: detail.author,
+              publisher: detail.publisher,
+              isbn: detail.isbn,
+              releaseDate: detail.releaseDate,
+              cCode,
+              genre,
+              price: detail.price,
+            }
+          } else {
+            continue // 両方失敗 → スキップ
           }
-        } else {
+        } catch {
           continue
         }
       }
