@@ -19,6 +19,45 @@ const STATUS_COLORS: Record<string, string> = {
 const STATUS_OPTIONS = ['未対応', '仕入検討中', '仕入済', '見送り'] as const
 const RANK_OPTIONS = ['高確率', '中確率', '注目'] as const
 
+// ランクの優先度（数値が小さいほど上位）
+const RANK_PRIORITY: Record<string, number> = {
+  '高確率': 1,
+  '中確率': 2,
+  '注目': 3,
+}
+const RANK_NONE = 99 // ランクなし
+
+type SortKey = 'discovered_at' | 'release_date' | 'title' | 'rank'
+type SortDir = 'asc' | 'desc'
+type SortOption = { field: SortKey; order: SortDir; label: string }
+
+const SORT_OPTIONS: SortOption[] = [
+  { field: 'discovered_at', order: 'desc', label: '発見日（新しい順）' },
+  { field: 'discovered_at', order: 'asc',  label: '発見日（古い順）' },
+  { field: 'release_date',  order: 'asc',  label: '発売日（近い順）' },
+  { field: 'release_date',  order: 'desc', label: '発売日（遠い順）' },
+  { field: 'rank',          order: 'asc',  label: 'ランク（高→低）' },
+  { field: 'rank',          order: 'desc', label: 'ランク（低→高）' },
+  { field: 'title',         order: 'asc',  label: 'タイトル（A→Z）' },
+]
+
+function compareByField(a: Book, b: Book, field: SortKey, order: SortDir): number {
+  let cmp = 0
+  if (field === 'rank') {
+    const aVal = RANK_PRIORITY[a.rank || ''] ?? RANK_NONE
+    const bVal = RANK_PRIORITY[b.rank || ''] ?? RANK_NONE
+    cmp = aVal - bVal
+  } else if (field === 'release_date' || field === 'discovered_at') {
+    const aVal = a[field] || ''
+    const bVal = b[field] || ''
+    cmp = aVal < bVal ? -1 : aVal > bVal ? 1 : 0
+  } else {
+    // title
+    cmp = (a.title || '').localeCompare(b.title || '', 'ja')
+  }
+  return order === 'desc' ? -cmp : cmp
+}
+
 function formatFollowers(n: number): string {
   if (n >= 10000) return `${(n / 10000).toFixed(1)}万`
   if (n >= 1000) return `${(n / 1000).toFixed(1)}千`
@@ -42,6 +81,12 @@ function SnsInfo({ snsData }: { snsData: SnsData }) {
     return (Number(obj[field]) || Number(obj['followers']) || 0)
   }
 
+  const getUrl = (val: unknown): string | null => {
+    if (!val || typeof val === 'string') return null
+    const obj = val as Record<string, unknown>
+    return (obj['url'] as string) || null
+  }
+
   const entries = platforms.filter(p => {
     return getCount(snsData[p.key], p.field) > 0
   })
@@ -50,11 +95,21 @@ function SnsInfo({ snsData }: { snsData: SnsData }) {
     <div className="flex flex-wrap gap-1.5">
       {entries.map(p => {
         const count = getCount(snsData[p.key], p.field)
-        return (
-          <span key={p.key} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-indigo-50 text-indigo-700">
+        const url = getUrl(snsData[p.key])
+        const badge = (
+          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-indigo-50 text-indigo-700 ${url ? 'hover:bg-indigo-100 cursor-pointer' : ''}`}>
             {p.label}: {formatFollowers(count)}
+            {url && <span className="text-indigo-400">↗</span>}
           </span>
         )
+        if (url) {
+          return (
+            <a key={p.key} href={url} target="_blank" rel="noopener noreferrer">
+              {badge}
+            </a>
+          )
+        }
+        return <span key={p.key}>{badge}</span>
       })}
       {snsData.other && (
         <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-purple-50 text-purple-700">
@@ -194,8 +249,8 @@ export default function Dashboard() {
   const [search, setSearch] = useState('')
   const [filterStatus, setFilterStatus] = useState('')
   const [filterRank, setFilterRank] = useState('')
-  const [sortField, setSortField] = useState('discovered_at')
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
+  const [sort1, setSort1] = useState('release_date:desc')
+  const [sort2, setSort2] = useState('') // 2nd sort（空＝なし）
 
   const fetchBooks = useCallback(async () => {
     setLoading(true)
@@ -203,8 +258,9 @@ export default function Dashboard() {
     if (search) params.set('search', search)
     if (filterStatus) params.set('status', filterStatus)
     if (filterRank) params.set('rank', filterRank)
-    params.set('sort', sortField)
-    params.set('order', sortOrder)
+    // APIからはdiscovered_at descで全件取得し、クライアントでソート
+    params.set('sort', 'discovered_at')
+    params.set('order', 'desc')
 
     try {
       const res = await fetch(`/api/books?${params}`)
@@ -217,7 +273,21 @@ export default function Dashboard() {
     } finally {
       setLoading(false)
     }
-  }, [search, filterStatus, filterRank, sortField, sortOrder])
+  }, [search, filterStatus, filterRank])
+
+  // クライアント側で2段階ソート
+  const sortedBooks = (() => {
+    const [f1, o1] = sort1.split(':') as [SortKey, SortDir]
+    const hasSort2 = sort2 !== ''
+    const [f2, o2] = hasSort2 ? (sort2.split(':') as [SortKey, SortDir]) : ['discovered_at' as SortKey, 'desc' as SortDir]
+
+    return [...books].sort((a, b) => {
+      const cmp1 = compareByField(a, b, f1, o1)
+      if (cmp1 !== 0) return cmp1
+      if (hasSort2) return compareByField(a, b, f2, o2)
+      return 0
+    })
+  })()
 
   useEffect(() => {
     fetchBooks()
@@ -304,19 +374,29 @@ export default function Dashboard() {
               ))}
             </select>
             <select
-              value={`${sortField}:${sortOrder}`}
-              onChange={(e) => {
-                const [f, o] = e.target.value.split(':')
-                setSortField(f)
-                setSortOrder(o as 'asc' | 'desc')
-              }}
+              value={sort1}
+              onChange={(e) => setSort1(e.target.value)}
               className="px-3 py-1.5 text-sm border rounded-md bg-white"
             >
-              <option value="discovered_at:desc">発見日（新しい順）</option>
-              <option value="discovered_at:asc">発見日（古い順）</option>
-              <option value="release_date:asc">発売日（近い順）</option>
-              <option value="release_date:desc">発売日（遠い順）</option>
-              <option value="title:asc">タイトル（A→Z）</option>
+              {SORT_OPTIONS.map(opt => (
+                <option key={`${opt.field}:${opt.order}`} value={`${opt.field}:${opt.order}`}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <select
+              value={sort2}
+              onChange={(e) => setSort2(e.target.value)}
+              className="px-3 py-1.5 text-sm border rounded-md bg-white text-gray-500"
+            >
+              <option value="">次に...</option>
+              {SORT_OPTIONS
+                .filter(opt => `${opt.field}:${opt.order}` !== sort1)
+                .map(opt => (
+                  <option key={`${opt.field}:${opt.order}`} value={`${opt.field}:${opt.order}`}>
+                    → {opt.label}
+                  </option>
+                ))}
             </select>
           </div>
         </div>
@@ -332,7 +412,7 @@ export default function Dashboard() {
           </div>
         ) : (
           <div className="grid gap-4 md:grid-cols-2">
-            {books.map(book => (
+            {sortedBooks.map(book => (
               <BookCard
                 key={book.id}
                 book={book}
