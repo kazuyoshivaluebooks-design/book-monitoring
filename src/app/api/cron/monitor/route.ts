@@ -3,7 +3,7 @@ import { supabase } from '@/lib/supabase'
 import * as cheerio from 'cheerio'
 
 export const dynamic = 'force-dynamic'
-export const maxDuration = 60 // Vercel Pro: 60s, Hobby: 10s
+export const maxDuration = 10 // Vercel Hobby: 10s
 
 // 除外ジャンルのキーワード
 const EXCLUDED_KEYWORDS = [
@@ -254,22 +254,22 @@ export async function GET(request: NextRequest) {
 
   try {
     // 1. 版元ドットコムから ISBN + uniq リストを収集（60日先まで）
+    // 60daysにtoday/tomorrow/30daysの全てが含まれるので、並列で2パスに絞る
     const paths = [
-      '/bd/shinkan/today',       // 本日発売
-      '/bd/kinkan/tomorrow',     // 明日発売
-      '/bd/kinkan/30days',       // 30日以内に発売
+      '/bd/shinkan/today',       // 本日発売（60daysに含まれないことがある）
       '/bd/kinkan/60days',       // 60日以内に発売
     ]
 
     const allItems = new Map<string, HanmotoListItem>() // isbn → item (重複排除)
-    for (const path of paths) {
-      try {
-        const items = await fetchHanmotoList(path)
-        items.forEach(item => {
+    const listResults = await Promise.allSettled(paths.map(p => fetchHanmotoList(p)))
+    for (let i = 0; i < listResults.length; i++) {
+      const r = listResults[i]
+      if (r.status === 'fulfilled') {
+        r.value.forEach(item => {
           if (!allItems.has(item.isbn)) allItems.set(item.isbn, item)
         })
-      } catch (e) {
-        results.errors.push(`リスト取得エラー (${path}): ${e instanceof Error ? e.message : String(e)}`)
+      } else {
+        results.errors.push(`リスト取得エラー (${paths[i]}): ${r.reason}`)
       }
     }
     results.scrapedItems = allItems.size
@@ -278,15 +278,16 @@ export async function GET(request: NextRequest) {
       return NextResponse.json(results, { status: 500 })
     }
 
-    // 2. openBD API でジャンル・Cコード・発売日を一括取得
+    // 2. openBD API でジャンル・Cコード・発売日を一括取得（並列実行）
     const allIsbns = Array.from(allItems.keys())
-    const openBDMap = await fetchOpenBDInfo(allIsbns)
+    const [openBDMap, existingBooksResult] = await Promise.all([
+      fetchOpenBDInfo(allIsbns),
+      supabase.from('books').select('id, isbn, title, author, release_date'),
+    ])
     results.openBDResolved = openBDMap.size
 
-    // 3. 既存書籍の確認
-    const { data: existingBooks } = await supabase
-      .from('books')
-      .select('id, isbn, title, author, release_date')
+    // 3. 既存書籍の確認（Step 2で並列取得済み）
+    const existingBooks = existingBooksResult.data
 
     const existingIsbns = new Map<string, { id: string; release_date: string | null }>()
     const existingTitles = new Set<string>()
@@ -298,7 +299,7 @@ export async function GET(request: NextRequest) {
     // 4. 各書籍を処理
     for (const [isbn, item] of allItems) {
       const elapsed = Date.now() - startTime
-      if (elapsed > 55000) {
+      if (elapsed > 8000) {
         results.errors.push('タイムアウト間近のため処理を中断')
         break
       }
@@ -317,15 +318,11 @@ export async function GET(request: NextRequest) {
       // 4b. 既存チェック
       const existingByIsbn = existingIsbns.get(isbn)
       if (existingByIsbn) {
-        // 既存書籍に release_date が欠損 → 版元ドットコム個別詳細から補完
-        if (!existingByIsbn.release_date) {
+        // 既存書籍に release_date が欠損 → openBDのpubdateで補完（高速）
+        if (!existingByIsbn.release_date && obInfo?.pubdate) {
           try {
-            const detail = await fetchHanmotoBookDetail(item)
-            const newDate = detail?.releaseDate || obInfo?.pubdate || null
-            if (newDate) {
-              await supabase.from('books').update({ release_date: newDate }).eq('id', existingByIsbn.id)
-              results.updatedReleaseDate++
-            }
+            await supabase.from('books').update({ release_date: obInfo.pubdate }).eq('id', existingByIsbn.id)
+            results.updatedReleaseDate++
           } catch {
             // ignore
           }
