@@ -124,8 +124,8 @@ function SnsInfo({ snsData }: { snsData: SnsData }) {
 }
 
 function BookCover({ isbn }: { isbn: string | null }) {
-  const [hasError, setHasError] = useState(false)
-  if (!isbn || hasError) {
+  const [status, setStatus] = useState<'loading' | 'ok' | 'none'>('loading')
+  if (!isbn || status === 'none') {
     return (
       <div className="w-16 h-22 flex-shrink-0 rounded bg-gray-100 flex items-center justify-center">
         <span className="text-gray-300 text-2xl">📖</span>
@@ -136,8 +136,16 @@ function BookCover({ isbn }: { isbn: string | null }) {
     <img
       src={`https://cover.openbd.jp/${isbn}.jpg`}
       alt=""
-      className="w-16 h-auto flex-shrink-0 rounded shadow-sm object-cover"
-      onError={() => setHasError(true)}
+      className={`w-16 flex-shrink-0 rounded shadow-sm object-cover ${status === 'loading' ? 'h-22 bg-gray-50' : 'h-auto'}`}
+      onError={() => setStatus('none')}
+      onLoad={(e) => {
+        const img = e.currentTarget
+        if (img.naturalWidth < 10 || img.naturalHeight < 10) {
+          setStatus('none')
+        } else {
+          setStatus('ok')
+        }
+      }}
       loading="lazy"
     />
   )
