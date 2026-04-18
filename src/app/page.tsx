@@ -125,6 +125,25 @@ function SnsInfo({ snsData }: { snsData: SnsData }) {
 
 function BookCover({ isbn }: { isbn: string | null }) {
   const [status, setStatus] = useState<'loading' | 'ok' | 'none'>('loading')
+
+  useEffect(() => {
+    if (!isbn) return
+    let cancelled = false
+    const img = new Image()
+    img.onload = () => {
+      if (cancelled) return
+      if (img.naturalWidth < 10 || img.naturalHeight < 10) {
+        setStatus('none')
+      } else {
+        setStatus('ok')
+      }
+    }
+    img.onerror = () => { if (!cancelled) setStatus('none') }
+    img.src = `https://cover.openbd.jp/${isbn}.jpg`
+    const timer = setTimeout(() => { if (!cancelled) setStatus('none') }, 5000)
+    return () => { cancelled = true; clearTimeout(timer) }
+  }, [isbn])
+
   if (!isbn || status === 'none') {
     return (
       <div className="w-16 h-22 flex-shrink-0 rounded bg-gray-100 flex items-center justify-center">
@@ -132,21 +151,14 @@ function BookCover({ isbn }: { isbn: string | null }) {
       </div>
     )
   }
+  if (status === 'loading') {
+    return <div className="w-16 h-22 flex-shrink-0 rounded bg-gray-50 animate-pulse" />
+  }
   return (
     <img
       src={`https://cover.openbd.jp/${isbn}.jpg`}
       alt=""
-      className={`w-16 flex-shrink-0 rounded shadow-sm object-cover ${status === 'loading' ? 'h-22 bg-gray-50' : 'h-auto'}`}
-      onError={() => setStatus('none')}
-      onLoad={(e) => {
-        const img = e.currentTarget
-        if (img.naturalWidth < 10 || img.naturalHeight < 10) {
-          setStatus('none')
-        } else {
-          setStatus('ok')
-        }
-      }}
-      loading="lazy"
+      className="w-16 h-auto flex-shrink-0 rounded shadow-sm object-cover"
     />
   )
 }
