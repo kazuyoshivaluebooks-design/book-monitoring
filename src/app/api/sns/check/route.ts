@@ -177,14 +177,16 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    // SNS未調査（evaluation_reason に 'SNS調査待ち' を含む or rank が null で sns_data が空）の書籍を取得
+    // SNS未調査の書籍を取得
+    // rank が null かつ sns_data が空（{} or null）で、スキップ済みでないもの
     const { data: pendingBooks, error } = await supabase
       .from('books')
-      .select('id, title, author')
+      .select('id, title, author, evaluation_reason')
       .is('rank', null)
-      .eq('evaluation_reason', '自動検出 - SNS調査待ち')
-      .order('created_at', { ascending: false })
-      .limit(Math.min(limit, 10))  // 最大10件まで
+      .eq('sns_data', '{}')
+      .not('evaluation_reason', 'like', '%SNS調査スキップ%')
+      .order('release_date', { ascending: true, nullsFirst: false })
+      .limit(Math.min(limit, 20))  // 最大20件まで
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 })
@@ -199,19 +201,35 @@ export async function GET(request: NextRequest) {
 
     const startTime = Date.now()
     const results = []
+    const PARALLEL = 2  // 2冊同時処理
+    let idx = 0
 
-    for (const book of pendingBooks) {
-      // Vercel の実行時間制限を考慮（残り時間が少なければ中断）
-      if (Date.now() - startTime > 8000) {
-        break  // 8秒経過で中断（Hobby Plan 10秒制限のバッファ）
+    while (idx < pendingBooks.length) {
+      // Vercel Hobby Plan 10秒制限のバッファ
+      if (Date.now() - startTime > 7000) break
+
+      const batch = pendingBooks.slice(idx, idx + PARALLEL)
+      const batchResults = await Promise.allSettled(
+        batch.map(book => checkSingleBook(book.id))
+      )
+      for (const r of batchResults) {
+        if (r.status === 'fulfilled') results.push(r.value)
+        else results.push({ error: String(r.reason) })
       }
-      const result = await checkSingleBook(book.id)
-      results.push(result)
+      idx += PARALLEL
     }
+
+    // 未調査の残数を別クエリで取得
+    const { count } = await supabase
+      .from('books')
+      .select('id', { count: 'exact', head: true })
+      .is('rank', null)
+      .eq('sns_data', '{}')
+      .not('evaluation_reason', 'like', '%SNS調査スキップ%')
 
     return NextResponse.json({
       processed: results.length,
-      remaining: pendingBooks.length - results.length,
+      remaining: (count || 0) - results.length,
       results,
       elapsedMs: Date.now() - startTime,
     })
