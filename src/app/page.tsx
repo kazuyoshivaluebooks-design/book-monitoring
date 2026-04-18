@@ -121,9 +121,9 @@ function BookCard({
         {book.publisher && <span className="text-gray-400"> / {book.publisher}</span>}
       </p>
       {book.release_date && (
-        <p className="text-sm text-gray-500 mb-2">
+        <span className="inline-block text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-600 mb-2">
           📅 {book.release_date.replace(/-/g, '/')}
-        </p>
+        </span>
       )}
 
       <SnsInfo snsData={book.sns_data || {}} />
