@@ -121,7 +121,7 @@ function BookCard({
         {book.publisher && <span className="text-gray-400"> / {book.publisher}</span>}
       </p>
       {book.release_date && (
-        <p className="text-xs text-gray-400 mb-2">
+        <p className="text-sm text-gray-500 mb-2">
           📅 {book.release_date.replace(/-/g, '/')}
         </p>
       )}
