@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { after } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import { searchYouTubeAuthor } from '@/lib/sns/youtube'
 import { searchSocialProfiles } from '@/lib/sns/social-search'
@@ -224,7 +223,7 @@ export async function GET(request: NextRequest) {
     let idx = 0
 
     while (idx < pendingBooks.length) {
-      if (Date.now() - startTime > 7000) break
+      if (Date.now() - startTime > 6000) break  // チェーン用に余裕を残す
 
       const batch = pendingBooks.slice(idx, idx + PARALLEL)
       const batchResults = await Promise.allSettled(
@@ -240,23 +239,29 @@ export async function GET(request: NextRequest) {
     const remaining = await getPendingCount()
 
     // チェーン: 残りがあれば次のバッチを自動実行
-    // after() はレスポンス送信後に実行されるので確実にチェーンが発火する
+    // awaitするがAbortで即座に制御を返す（リクエスト送信だけ確保）
     const baseUrl = new URL(request.url).origin
+    let chained = false
     if (isChain && remaining > 0 && depth < MAX_CHAIN_DEPTH) {
-      after(async () => {
-        // 少し待ってからチェーン（API負荷分散）
-        await new Promise(r => setTimeout(r, 1000))
+      try {
+        const controller = new AbortController()
+        setTimeout(() => controller.abort(), 800)
         await fetch(
-          `${baseUrl}/api/sns/check?limit=${limit}&chain=true&depth=${depth + 1}`
-        ).catch(() => {})
-      })
+          `${baseUrl}/api/sns/check?limit=${limit}&chain=true&depth=${depth + 1}`,
+          { signal: controller.signal }
+        )
+        chained = true
+      } catch {
+        // AbortError は想定内（リクエストは送信済み）
+        chained = true
+      }
     }
 
     return NextResponse.json({
       processed: results.length,
       remaining,
       chainDepth: depth,
-      willChain: isChain && remaining > 0 && depth < MAX_CHAIN_DEPTH,
+      chained,
       results,
       elapsedMs: Date.now() - startTime,
     })
