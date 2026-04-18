@@ -359,32 +359,35 @@ export async function GET(request: NextRequest) {
     const openBDMap = await fetchOpenBDInfo(unknownIsbns)
     // openBDResolved は実際に登録に使った件数をカウント（下のループで加算）
 
-    // 4. 各書籍を処理
+    // 4. Phase 1: openBDデータがある書籍を一括収集（高速、ネットワーク不要）
+    const batchInserts: Array<{
+      title: string; author: string; publisher: string | null;
+      isbn: string | null; price: number | null; release_date: string | null;
+      c_code: string | null; genre: string | null;
+      rank: null; status: string; sns_data: Record<string, never>;
+      evaluation_reason: string; source: string;
+    }> = []
+    const noOpenBDItems: Array<[string, HanmotoListItem]> = []
+
     for (const [isbn, item] of allItems) {
-      const elapsed = Date.now() - startTime
-      if (elapsed > 8000) {
-        results.errors.push('タイムアウト間近のため処理を中断')
-        break
-      }
-
-      const obInfo = openBDMap.get(isbn)
-
-      // 4a. ジャンルフィルタリング（openBD のCコード/ジャンルで判定）
-      const cCode = obInfo?.cCode || null
-      const genre = obInfo?.genre || null
-      const titleForFilter = obInfo?.title || ''
-      if (shouldExclude(titleForFilter, cCode, genre)) {
-        results.filteredOut++
-        continue
-      }
-
-      // 4b. 既存チェック（ISBNで高速判定、openBDは未登録分のみ取得済み）
+      // 既存チェック
       if (existingIsbns.has(isbn)) {
         results.alreadyExists++
         continue
       }
 
-      // タイトルベースの重複チェック用（openBDの情報を使う）
+      const obInfo = openBDMap.get(isbn)
+      const cCode = obInfo?.cCode || null
+      const genre = obInfo?.genre || null
+      const titleForFilter = obInfo?.title || ''
+
+      // ジャンルフィルタリング
+      if (shouldExclude(titleForFilter, cCode, genre)) {
+        results.filteredOut++
+        continue
+      }
+
+      // タイトル重複チェック
       const obTitle = obInfo?.title || ''
       const obAuthor = obInfo?.author || ''
       if (obTitle && existingTitles.has(`${obTitle}|${obAuthor}`)) {
@@ -392,91 +395,99 @@ export async function GET(request: NextRequest) {
         continue
       }
 
-      // 4c. 新規書籍の登録
-      // openBD にタイトル情報があればそのまま使う（高速）
-      // 発売日が未取得でも登録し、fix-dates バッチで後から補完する
-      let bookData: BookData
       if (obInfo?.title) {
-        // openBD で十分な情報がある → 個別ページ取得をスキップ（高速化）
-        bookData = {
+        // openBDデータあり → バッチ挿入リストに追加
+        batchInserts.push({
           title: obInfo.title,
           author: obInfo.author || '',
-          publisher: obInfo.publisher || '',
+          publisher: obInfo.publisher || null,
           isbn,
-          releaseDate: obInfo.pubdate,
-          cCode,
-          genre,
           price: null,
-        }
-        results.openBDResolved++
-      } else {
-        // openBD にデータがない → 版元ドットコム個別ページから取得
-        const elapsed2 = Date.now() - startTime
-        if (elapsed2 > 7000) {
-          // 個別ページ取得は重いのでタイムアウト間近なら中断
-          results.errors.push('タイムアウト間近のため個別取得を中断')
-          break
-        }
-        try {
-          const detail = await fetchHanmotoBookDetail(item)
-          if (detail) {
-            results.hanmotoResolved++
-            bookData = {
-              title: detail.title,
-              author: detail.author,
-              publisher: detail.publisher,
-              isbn: detail.isbn,
-              releaseDate: detail.releaseDate,
-              cCode,
-              genre,
-              price: detail.price,
-            }
-          } else {
-            continue // 両方失敗 → スキップ
-          }
-        } catch {
-          continue
-        }
-      }
-
-      // 再度タイトル重複チェック
-      if (existingTitles.has(`${bookData.title}|${bookData.author}`)) {
-        results.alreadyExists++
-        continue
-      }
-
-      // 5. 登録
-      try {
-        const { error } = await supabase.from('books').insert({
-          title: bookData.title,
-          author: bookData.author,
-          publisher: bookData.publisher || null,
-          isbn: bookData.isbn,
-          price: bookData.price,
-          release_date: bookData.releaseDate,
-          c_code: bookData.cCode,
-          genre: bookData.genre,
+          release_date: obInfo.pubdate,
+          c_code: cCode,
+          genre,
           rank: null,
           status: '未対応',
           sns_data: {},
           evaluation_reason: '自動検出 - SNS調査待ち',
           source: '版元ドットコム + openBD',
         })
+        existingTitles.add(`${obInfo.title}|${obInfo.author || ''}`)
+        existingIsbns.set(isbn, { id: '', release_date: obInfo.pubdate })
+        results.openBDResolved++
+      } else {
+        noOpenBDItems.push([isbn, item])
+      }
+    }
 
+    // 5. Phase 1 バッチ挿入（1回のAPI呼び出しで全件登録）
+    if (batchInserts.length > 0) {
+      try {
+        const { error, data } = await supabase.from('books').insert(batchInserts).select('title, author')
         if (error) {
-          results.errors.push(`登録エラー (${bookData.title}): ${error.message}`)
+          results.errors.push(`バッチ登録エラー: ${error.message}`)
+          // バッチ失敗時は1件ずつリトライ
+          for (const row of batchInserts) {
+            const { error: retryErr } = await supabase.from('books').insert(row)
+            if (!retryErr) {
+              results.newlyRegistered++
+              results.newBooks.push({ title: row.title, author: row.author, publisher: row.publisher || '' })
+            }
+            if (Date.now() - startTime > 8000) break
+          }
         } else {
-          results.newlyRegistered++
-          results.newBooks.push({
-            title: bookData.title,
-            author: bookData.author,
-            publisher: bookData.publisher,
-          })
-          existingTitles.add(`${bookData.title}|${bookData.author}`)
-          if (bookData.isbn) existingIsbns.set(bookData.isbn, { id: '', release_date: bookData.releaseDate })
+          results.newlyRegistered += batchInserts.length
+          for (const row of batchInserts) {
+            results.newBooks.push({ title: row.title, author: row.author, publisher: row.publisher || '' })
+          }
         }
       } catch (e) {
-        results.errors.push(`登録エラー (${bookData.title}): ${e instanceof Error ? e.message : String(e)}`)
+        results.errors.push(`バッチ登録例外: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+
+    // 6. Phase 2: openBDにないISBNは版元ドットコム個別ページから取得（残り時間で）
+    for (const [isbn, item] of noOpenBDItems) {
+      const elapsed = Date.now() - startTime
+      if (elapsed > 7500) {
+        results.errors.push(`残り${noOpenBDItems.length}件は次回処理`)
+        break
+      }
+
+      try {
+        const detail = await fetchHanmotoBookDetail(item)
+        if (!detail) continue
+
+        if (existingTitles.has(`${detail.title}|${detail.author}`)) {
+          results.alreadyExists++
+          continue
+        }
+
+        const { error } = await supabase.from('books').insert({
+          title: detail.title,
+          author: detail.author,
+          publisher: detail.publisher || null,
+          isbn: detail.isbn,
+          price: detail.price,
+          release_date: detail.releaseDate,
+          c_code: null,
+          genre: null,
+          rank: null,
+          status: '未対応',
+          sns_data: {},
+          evaluation_reason: '自動検出 - SNS調査待ち',
+          source: '版元ドットコム',
+        })
+
+        if (!error) {
+          results.hanmotoResolved++
+          results.newlyRegistered++
+          results.newBooks.push({ title: detail.title, author: detail.author, publisher: detail.publisher })
+          existingTitles.add(`${detail.title}|${detail.author}`)
+          existingIsbns.set(isbn, { id: '', release_date: detail.releaseDate })
+        }
+      } catch {
+        continue
       }
     }
 
