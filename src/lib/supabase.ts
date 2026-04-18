@@ -14,6 +14,8 @@ export type SnsData = {
   facebook?: { followers: number; url?: string }
   voicy?: { followers: number; url?: string }
   note?: { followers: number; url?: string }
+  podcast?: { followers: number; url?: string; platform?: string }
+  standfm?: { followers: number; url?: string }
   other?: string
 }
 

@@ -12,7 +12,7 @@
  */
 
 export type SocialProfile = {
-  platform: 'x' | 'instagram' | 'facebook'
+  platform: 'x' | 'instagram' | 'facebook' | 'tiktok' | 'voicy' | 'standfm' | 'podcast' | 'note'
   url: string
   displayName: string | null
   snippet: string | null
@@ -40,6 +40,11 @@ export async function searchSocialProfiles(
     { platform: 'x', site: 'x.com OR site:twitter.com', label: 'X/Twitter' },
     { platform: 'instagram', site: 'instagram.com', label: 'Instagram' },
     { platform: 'facebook', site: 'facebook.com', label: 'Facebook' },
+    { platform: 'tiktok', site: 'tiktok.com', label: 'TikTok' },
+    { platform: 'voicy', site: 'voicy.jp', label: 'Voicy' },
+    { platform: 'standfm', site: 'stand.fm', label: 'stand.fm' },
+    { platform: 'podcast', site: 'podcasts.apple.com OR site:open.spotify.com/show', label: 'Podcast' },
+    { platform: 'note', site: 'note.com', label: 'note' },
   ]
 
   for (const { platform, site } of platforms) {

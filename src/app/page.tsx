@@ -72,6 +72,8 @@ function SnsInfo({ snsData }: { snsData: SnsData }) {
     { key: 'tiktok', label: 'TikTok', field: 'followers' },
     { key: 'facebook', label: 'Facebook', field: 'followers' },
     { key: 'voicy', label: 'Voicy', field: 'followers' },
+    { key: 'standfm', label: 'stand.fm', field: 'followers' },
+    { key: 'podcast', label: 'Podcast', field: 'followers' },
     { key: 'note', label: 'note', field: 'followers' },
   ]
 

@@ -74,6 +74,52 @@ export async function rankBook(
     }
   }
 
+  // TikTok
+  const tiktokProfile = socialProfiles.find(p => p.platform === 'tiktok')
+  if (tiktokProfile) {
+    snsData.tiktok = {
+      followers: tiktokProfile.estimatedFollowers || 0,
+      url: tiktokProfile.url,
+    }
+  }
+
+  // Voicy
+  const voicyProfile = socialProfiles.find(p => p.platform === 'voicy')
+  if (voicyProfile) {
+    snsData.voicy = {
+      followers: voicyProfile.estimatedFollowers || 0,
+      url: voicyProfile.url,
+    }
+  }
+
+  // stand.fm
+  const standfmProfile = socialProfiles.find(p => p.platform === 'standfm')
+  if (standfmProfile) {
+    snsData.standfm = {
+      followers: standfmProfile.estimatedFollowers || 0,
+      url: standfmProfile.url,
+    }
+  }
+
+  // Podcast (Apple/Spotify)
+  const podcastProfile = socialProfiles.find(p => p.platform === 'podcast')
+  if (podcastProfile) {
+    snsData.podcast = {
+      followers: podcastProfile.estimatedFollowers || 0,
+      url: podcastProfile.url,
+      platform: podcastProfile.url?.includes('spotify') ? 'Spotify' : 'Apple Podcasts',
+    }
+  }
+
+  // note
+  const noteProfile = socialProfiles.find(p => p.platform === 'note')
+  if (noteProfile) {
+    snsData.note = {
+      followers: noteProfile.estimatedFollowers || 0,
+      url: noteProfile.url,
+    }
+  }
+
   // Claude API で判定
   const youtubeSection = youtube
     ? `
@@ -88,16 +134,35 @@ ${youtube.recentVideos.map(v =>
 ).join('\n')}`
     : '## YouTube: チャンネル未発見'
 
-  const socialSection = socialProfiles.length > 0
+  // SNS + ポッドキャスト を分類して表示
+  const snsProfiles = socialProfiles.filter(p =>
+    ['x', 'instagram', 'facebook', 'tiktok', 'note'].includes(p.platform)
+  )
+  const podcastProfiles = socialProfiles.filter(p =>
+    ['voicy', 'standfm', 'podcast'].includes(p.platform)
+  )
+
+  const snsSection = snsProfiles.length > 0
     ? `
 ## SNSプロフィール検索結果
-${socialProfiles.map(p => {
+${snsProfiles.map(p => {
   const followers = p.estimatedFollowers
     ? `推定フォロワー${p.estimatedFollowers.toLocaleString()}人`
     : 'フォロワー数不明'
   return `- ${p.platform.toUpperCase()}: ${p.url}\n  ${followers}\n  ${p.snippet || ''}`
 }).join('\n')}`
     : '## SNSプロフィール: 主要プラットフォームで未発見'
+
+  const podcastSection = podcastProfiles.length > 0
+    ? `
+## ポッドキャスト・音声メディア
+${podcastProfiles.map(p => {
+  const followers = p.estimatedFollowers
+    ? `推定リスナー/フォロワー${p.estimatedFollowers.toLocaleString()}人`
+    : 'リスナー数不明'
+  return `- ${p.platform.toUpperCase()}: ${p.url}\n  ${followers}\n  ${p.snippet || ''}`
+}).join('\n')}`
+    : '## ポッドキャスト: 未発見'
 
   const prompt = `あなたは中古書店の仕入れ担当です。以下の新刊書籍について、著者のSNS影響力とエンゲージメントを分析し、販売見込みランクを判定してください。
 
@@ -111,7 +176,9 @@ ${socialProfiles.map(p => {
 
 ${youtubeSection}
 
-${socialSection}
+${snsSection}
+
+${podcastSection}
 
 ## 判定基準
 
@@ -119,16 +186,19 @@ ${socialSection}
 - SNS合計フォロワー10万人以上
 - YouTube登録者5万人以上かつエンゲージメント率が高い
 - 各プラットフォームのフォロワー合算が大きく、著書の販促に積極的と判断できる
+- ポッドキャスト（Voicy/Spotify/Apple等）で人気番組を持つ著者
 - テレビ出演など、SNS外でも著名な著者
 
 【中確率】以下のいずれかに該当:
 - SNS合計フォロワー1万〜10万人
 - YouTube登録者1万〜5万人
+- ポッドキャスト配信者で一定のリスナー基盤がある
 - 特定分野で影響力があるが、一般的な知名度は限定的
 - エンゲージメント率は高いが、規模は中程度
 
 【注目】以下のいずれかに該当:
 - SNS合計フォロワー3,000〜1万人
+- ポッドキャストや音声メディアで活動が確認できる
 - 最近急成長中のアカウント
 - 話題性の高いテーマ（トレンド・ニュースに関連）
 - フォロワー数は少ないがエンゲージメント率が非常に高い
@@ -184,6 +254,11 @@ function fallbackRanking(snsData: SnsData, book: BookInfo): RankResult {
   if (snsData.x?.followers) totalFollowers += snsData.x.followers
   if (snsData.instagram?.followers) totalFollowers += snsData.instagram.followers
   if (snsData.facebook?.followers) totalFollowers += snsData.facebook.followers
+  if (snsData.tiktok?.followers) totalFollowers += snsData.tiktok.followers
+  if (snsData.voicy?.followers) totalFollowers += snsData.voicy.followers
+  if (snsData.standfm?.followers) totalFollowers += snsData.standfm.followers
+  if (snsData.podcast?.followers) totalFollowers += snsData.podcast.followers
+  if (snsData.note?.followers) totalFollowers += snsData.note.followers
 
   let rank: RankResult['rank'] = null
   let reason = ''
