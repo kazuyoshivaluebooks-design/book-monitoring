@@ -17,7 +17,6 @@ const EXCLUDED_KEYWORDS = [
 // C-code 除外パターン（雑誌、コミック、児童）
 const EXCLUDED_CCODE_PREFIXES = ['8', '97', '87']
 
-// ジャンル・C-code による除外判定
 function shouldExclude(title: string, cCode: string | null, genre: string | null): boolean {
   const text = `${title} ${genre || ''}`.toLowerCase()
   if (EXCLUDED_KEYWORDS.some(kw => text.includes(kw.toLowerCase()))) return true
@@ -39,11 +38,19 @@ type BookData = {
   price: number | null
 }
 
+type HanmotoListItem = {
+  isbn: string
+  uniq: string
+  lastupdated: string
+  shortcode: string
+  hanmoto_lastupdated: string
+}
+
 // ==============================
-// Step 1: 版元ドットコムから ISBN リストを取得
-// （サーバーサイド HTML 内の <script id="hanmotocom-data"> を解析）
+// Step 1: 版元ドットコムから ISBN + uniq リストを取得
+// HTML 内の <script id="hanmotocom-data"> を解析（最初の1ページ20件）
 // ==============================
-async function fetchHanmotoIsbns(path: string): Promise<string[]> {
+async function fetchHanmotoList(path: string): Promise<HanmotoListItem[]> {
   const url = `https://www.hanmoto.com${path}`
   const res = await fetch(url, {
     headers: {
@@ -58,57 +65,103 @@ async function fetchHanmotoIsbns(path: string): Promise<string[]> {
   const html = await res.text()
   const $ = cheerio.load(html)
 
-  // <script id="hanmotocom-data"> 内の JSON を解析
   const dataScript = $('#hanmotocom-data').html()
   if (!dataScript) return []
 
   try {
     const data = JSON.parse(dataScript)
-    const list: Array<{ isbn: string; uniq: string }> = data?.booklist?.list || []
-    return list
-      .map(item => item.isbn)
-      .filter((isbn): isbn is string => !!isbn && isbn.length === 13)
+    const list: HanmotoListItem[] = data?.booklist?.list || []
+    return list.filter(item => !!item.isbn && item.isbn.length === 13)
   } catch {
     return []
   }
 }
 
 // ==============================
-// Step 2: openBD API で書籍の詳細情報を取得
-// （最大1000件をカンマ区切りで一括取得可能）
+// Step 2: 版元ドットコムの book JSON API で個別書籍詳細を取得
+// URL: /bd/book/uniqs/{u1}/{u2}/{u3}/book.{hash}.{timestamp}.json
+// → dates.sales で発売日、titles.title.text でタイトルなど
+// ==============================
+type HanmotoBookDetail = {
+  title: string
+  author: string
+  publisher: string
+  isbn: string
+  releaseDate: string | null
+  price: number | null
+}
+
+async function fetchHanmotoBookDetail(item: HanmotoListItem): Promise<HanmotoBookDetail | null> {
+  // uniq からパスを生成（8文字の uniq を3分割+ハッシュ）
+  const uniq = item.uniq
+  if (!uniq || uniq.length < 6) return null
+
+  // URL パターン: /bd/book/uniqs/{c1c2}/{c3c4}/{c5c6}/book.{hash}.{lastupdated}.json
+  // ハッシュ部分はuniqの文字をシャッフルしたもの - 直接取得は困難
+  // 代わりに ISBN ページから取得する
+  try {
+    const url = `https://www.hanmoto.com/bd/isbn/${item.isbn}`
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      },
+      signal: AbortSignal.timeout(10000),
+    })
+    if (!res.ok) return null
+
+    const html = await res.text()
+    const $ = cheerio.load(html)
+    const dataScript = $('#hanmotocom-data').html()
+    if (!dataScript) return null
+
+    const data = JSON.parse(dataScript)
+    const book = data?.book?.data?.book
+    if (!book) return null
+
+    // タイトル
+    const title = book.titles?.title?.text || ''
+    if (!title) return null
+
+    // 著者
+    const authors = book.authors || {}
+    const authorNames = Object.values(authors)
+      .sort((a: unknown, b: unknown) => ((a as { priority: number }).priority || 0) - ((b as { priority: number }).priority || 0))
+      .map((a: unknown) => (a as { name: string }).name)
+      .filter(Boolean)
+    const author = authorNames.join(' ') || ''
+
+    // 出版社
+    const publisher = book.hakkou?.hatsubai || book.hakkou?.hakkou || ''
+
+    // 発売日: dates.sales (ISO形式) or dates.publish (YYYYMMDD)
+    let releaseDate: string | null = null
+    if (book.dates?.sales) {
+      releaseDate = book.dates.sales.split('T')[0] // "2026-06-17T00:00:00..." → "2026-06-17"
+    } else if (book.dates?.publish && book.dates.publish.length === 8) {
+      const p = book.dates.publish
+      releaseDate = `${p.slice(0, 4)}-${p.slice(4, 6)}-${p.slice(6, 8)}`
+    }
+
+    // 価格
+    const price = book.price?.fixed || null
+
+    return { title, author, publisher, isbn: item.isbn, releaseDate, price }
+  } catch {
+    return null
+  }
+}
+
+// ==============================
+// Step 3: openBD API でジャンル・Cコード情報を補完
 // ==============================
 type OpenBDBook = {
   onix?: {
     DescriptiveDetail?: {
-      TitleDetail?: {
-        TitleElement?: {
-          TitleText?: { content?: string }
-          Subtitle?: { content?: string }
-        }
-      }
-      Contributor?: Array<{
-        PersonName?: { content?: string }
-        ContributorRole?: string[]
-      }>
       Subject?: Array<{
         SubjectSchemeIdentifier?: string
         SubjectCode?: string
       }>
-    }
-    PublishingDetail?: {
-      Imprint?: { ImprintName?: string }
-      Publisher?: { PublisherName?: string }
-      PublishingDate?: Array<{
-        PublishingDateRole?: string
-        Date?: string
-      }>
-    }
-    ProductSupply?: {
-      SupplyDetail?: {
-        Price?: Array<{
-          PriceAmount?: string
-        }>
-      }
     }
   }
   summary?: {
@@ -120,88 +173,66 @@ type OpenBDBook = {
   }
 }
 
-function parseOpenBDBook(book: OpenBDBook): BookData | null {
-  if (!book) return null
-
-  const summary = book.summary
-  if (!summary?.title) return null
-
-  const title = summary.title
-  const author = summary.author || ''
-  const publisher = summary.publisher || ''
-  const isbn = summary.isbn || null
-
-  // 発売日: summary.pubdate (YYYYMMDD) → YYYY-MM-DD
-  let releaseDate: string | null = null
-  if (summary.pubdate && summary.pubdate.length === 8) {
-    releaseDate = `${summary.pubdate.slice(0, 4)}-${summary.pubdate.slice(4, 6)}-${summary.pubdate.slice(6, 8)}`
-  }
-
-  // Cコード: Subject の SubjectSchemeIdentifier="78" → SubjectCode
-  let cCode: string | null = null
-  const subjects = book.onix?.DescriptiveDetail?.Subject || []
-  for (const subj of subjects) {
-    if (subj.SubjectSchemeIdentifier === '78' && subj.SubjectCode) {
-      cCode = subj.SubjectCode
-      break
-    }
-  }
-
-  // ジャンル: Subject の SubjectSchemeIdentifier="79" → SubjectCode
-  let genre: string | null = null
-  for (const subj of subjects) {
-    if (subj.SubjectSchemeIdentifier === '79' && subj.SubjectCode) {
-      genre = subj.SubjectCode
-      break
-    }
-  }
-
-  // 価格
-  let price: number | null = null
-  const prices = book.onix?.ProductSupply?.SupplyDetail?.Price || []
-  if (prices.length > 0 && prices[0].PriceAmount) {
-    price = parseInt(prices[0].PriceAmount, 10)
-  }
-
-  return { title, author, publisher, isbn, releaseDate, cCode, genre, price }
+type OpenBDInfo = {
+  cCode: string | null
+  genre: string | null
+  // openBD の pubdate をフォールバック用に保持
+  pubdate: string | null
+  title: string | null
+  author: string | null
+  publisher: string | null
 }
 
-async function fetchOpenBDBooks(isbns: string[]): Promise<BookData[]> {
-  if (isbns.length === 0) return []
+async function fetchOpenBDInfo(isbns: string[]): Promise<Map<string, OpenBDInfo>> {
+  const result = new Map<string, OpenBDInfo>()
+  if (isbns.length === 0) return result
 
-  // openBD は最大1000件まで一括取得可能
   const batchSize = 100
-  const results: BookData[] = []
-
   for (let i = 0; i < isbns.length; i += batchSize) {
     const batch = isbns.slice(i, i + batchSize)
-    const url = `https://api.openbd.jp/v1/get?isbn=${batch.join(',')}`
-
     try {
-      const res = await fetch(url, {
+      const res = await fetch(`https://api.openbd.jp/v1/get?isbn=${batch.join(',')}`, {
         signal: AbortSignal.timeout(15000),
       })
       if (!res.ok) continue
 
       const data: (OpenBDBook | null)[] = await res.json()
       for (const item of data) {
-        if (!item) continue
-        const book = parseOpenBDBook(item)
-        if (book) results.push(book)
+        if (!item?.summary?.isbn) continue
+        const isbn = item.summary.isbn
+
+        let cCode: string | null = null
+        let genre: string | null = null
+        const subjects = item.onix?.DescriptiveDetail?.Subject || []
+        for (const subj of subjects) {
+          if (subj.SubjectSchemeIdentifier === '78' && subj.SubjectCode) cCode = subj.SubjectCode
+          if (subj.SubjectSchemeIdentifier === '79' && subj.SubjectCode) genre = subj.SubjectCode
+        }
+
+        let pubdate: string | null = null
+        if (item.summary.pubdate && item.summary.pubdate.length === 8) {
+          const p = item.summary.pubdate
+          pubdate = `${p.slice(0, 4)}-${p.slice(4, 6)}-${p.slice(6, 8)}`
+        }
+
+        result.set(isbn, {
+          cCode, genre, pubdate,
+          title: item.summary.title || null,
+          author: item.summary.author || null,
+          publisher: item.summary.publisher || null,
+        })
       }
     } catch {
-      // openBD エラーは無視して続行
+      // continue
     }
   }
-
-  return results
+  return result
 }
 
 // ==============================
 // メインの処理
 // ==============================
 export async function GET(request: NextRequest) {
-  // cron認証（Vercelのcron secretまたはAPIキー）
   const authHeader = request.headers.get('authorization')
   const cronSecret = process.env.CRON_SECRET
   if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
@@ -210,90 +241,173 @@ export async function GET(request: NextRequest) {
 
   const startTime = Date.now()
   const results = {
-    scrapedIsbns: 0,
+    scrapedItems: 0,
+    hanmotoResolved: 0,
     openBDResolved: 0,
     filteredOut: 0,
     alreadyExists: 0,
+    updatedReleaseDate: 0,
     newlyRegistered: 0,
     errors: [] as string[],
-    newBooks: [] as Array<{ title: string; author: string; publisher: string; rank: string }>,
+    newBooks: [] as Array<{ title: string; author: string; publisher: string }>,
   }
 
   try {
-    // 1. 版元ドットコムから ISBN を収集
+    // 1. 版元ドットコムから ISBN + uniq リストを収集（60日先まで）
     const paths = [
-      '/bd/shinkan/today',      // 本日発売
-      '/bd/kinkan/tomorrow',    // 明日発売
-      '/bd/kinkan/7days',       // 1週間以内に発売
+      '/bd/shinkan/today',       // 本日発売
+      '/bd/kinkan/tomorrow',     // 明日発売
+      '/bd/kinkan/30days',       // 30日以内に発売
+      '/bd/kinkan/60days',       // 60日以内に発売
     ]
 
-    const allIsbns = new Set<string>()
+    const allItems = new Map<string, HanmotoListItem>() // isbn → item (重複排除)
     for (const path of paths) {
       try {
-        const isbns = await fetchHanmotoIsbns(path)
-        isbns.forEach(isbn => allIsbns.add(isbn))
+        const items = await fetchHanmotoList(path)
+        items.forEach(item => {
+          if (!allItems.has(item.isbn)) allItems.set(item.isbn, item)
+        })
       } catch (e) {
-        results.errors.push(`ISBN取得エラー (${path}): ${e instanceof Error ? e.message : String(e)}`)
+        results.errors.push(`リスト取得エラー (${path}): ${e instanceof Error ? e.message : String(e)}`)
       }
     }
-    results.scrapedIsbns = allIsbns.size
+    results.scrapedItems = allItems.size
 
-    if (allIsbns.size === 0 && results.errors.length > 0) {
+    if (allItems.size === 0 && results.errors.length > 0) {
       return NextResponse.json(results, { status: 500 })
     }
 
-    // 2. openBD API で書籍の詳細情報を取得
-    const allBooks = await fetchOpenBDBooks(Array.from(allIsbns))
-    results.openBDResolved = allBooks.length
+    // 2. openBD API でジャンル・Cコード・発売日を一括取得
+    const allIsbns = Array.from(allItems.keys())
+    const openBDMap = await fetchOpenBDInfo(allIsbns)
+    results.openBDResolved = openBDMap.size
 
-    // 3. ジャンルフィルタリング
-    const filteredBooks = allBooks.filter(book => {
-      if (shouldExclude(book.title, book.cCode, book.genre)) {
-        results.filteredOut++
-        return false
-      }
-      return true
-    })
-
-    // 4. 既存書籍の確認
+    // 3. 既存書籍の確認
     const { data: existingBooks } = await supabase
       .from('books')
-      .select('isbn, title, author')
+      .select('id, isbn, title, author, release_date')
 
-    const existingIsbns = new Set(
-      (existingBooks || [])
-        .map(b => b.isbn)
-        .filter((isbn): isbn is string => isbn !== null)
-    )
-    const existingTitles = new Set(
-      (existingBooks || []).map(b => `${b.title}|${b.author}`)
-    )
+    const existingIsbns = new Map<string, { id: string; release_date: string | null }>()
+    const existingTitles = new Set<string>()
+    for (const b of (existingBooks || [])) {
+      if (b.isbn) existingIsbns.set(b.isbn, { id: b.id, release_date: b.release_date })
+      existingTitles.add(`${b.title}|${b.author}`)
+    }
 
-    // 5. 新規書籍のみ抽出
-    const newBooks = filteredBooks.filter(book => {
-      if (book.isbn && existingIsbns.has(book.isbn)) {
-        results.alreadyExists++
-        return false
+    // 4. 各書籍を処理
+    for (const [isbn, item] of allItems) {
+      const elapsed = Date.now() - startTime
+      if (elapsed > 55000) {
+        results.errors.push('タイムアウト間近のため処理を中断')
+        break
       }
-      if (existingTitles.has(`${book.title}|${book.author}`)) {
-        results.alreadyExists++
-        return false
-      }
-      return true
-    })
 
-    // 6. 新規書籍を登録（rank は null = "調査待ち" として仮登録）
-    for (const book of newBooks) {
+      const obInfo = openBDMap.get(isbn)
+
+      // 4a. ジャンルフィルタリング（openBD のCコード/ジャンルで判定）
+      const cCode = obInfo?.cCode || null
+      const genre = obInfo?.genre || null
+      const titleForFilter = obInfo?.title || ''
+      if (shouldExclude(titleForFilter, cCode, genre)) {
+        results.filteredOut++
+        continue
+      }
+
+      // 4b. 既存チェック
+      const existingByIsbn = existingIsbns.get(isbn)
+      if (existingByIsbn) {
+        // 既存書籍に release_date が欠損 → 版元ドットコム個別詳細から補完
+        if (!existingByIsbn.release_date) {
+          try {
+            const detail = await fetchHanmotoBookDetail(item)
+            const newDate = detail?.releaseDate || obInfo?.pubdate || null
+            if (newDate) {
+              await supabase.from('books').update({ release_date: newDate }).eq('id', existingByIsbn.id)
+              results.updatedReleaseDate++
+            }
+          } catch {
+            // ignore
+          }
+        }
+        results.alreadyExists++
+        continue
+      }
+
+      // タイトルベースの重複チェック用（openBDの情報を使う）
+      const obTitle = obInfo?.title || ''
+      const obAuthor = obInfo?.author || ''
+      if (obTitle && existingTitles.has(`${obTitle}|${obAuthor}`)) {
+        results.alreadyExists++
+        continue
+      }
+
+      // 4c. 新規書籍 → 版元ドットコムの個別詳細APIから発売日を取得
+      let bookData: BookData
+      try {
+        const detail = await fetchHanmotoBookDetail(item)
+        if (detail) {
+          results.hanmotoResolved++
+          bookData = {
+            title: detail.title,
+            author: detail.author,
+            publisher: detail.publisher,
+            isbn: detail.isbn,
+            releaseDate: detail.releaseDate || obInfo?.pubdate || null,
+            cCode,
+            genre,
+            price: detail.price,
+          }
+        } else if (obInfo?.title) {
+          // 版元ドットコム詳細取得失敗 → openBD フォールバック
+          bookData = {
+            title: obInfo.title,
+            author: obInfo.author || '',
+            publisher: obInfo.publisher || '',
+            isbn,
+            releaseDate: obInfo.pubdate,
+            cCode,
+            genre,
+            price: null,
+          }
+        } else {
+          // 両方失敗 → スキップ
+          continue
+        }
+      } catch {
+        if (obInfo?.title) {
+          bookData = {
+            title: obInfo.title,
+            author: obInfo.author || '',
+            publisher: obInfo.publisher || '',
+            isbn,
+            releaseDate: obInfo.pubdate,
+            cCode,
+            genre,
+            price: null,
+          }
+        } else {
+          continue
+        }
+      }
+
+      // 再度タイトル重複チェック
+      if (existingTitles.has(`${bookData.title}|${bookData.author}`)) {
+        results.alreadyExists++
+        continue
+      }
+
+      // 5. 登録
       try {
         const { error } = await supabase.from('books').insert({
-          title: book.title,
-          author: book.author,
-          publisher: book.publisher || null,
-          isbn: book.isbn,
-          price: book.price,
-          release_date: book.releaseDate,
-          c_code: book.cCode,
-          genre: book.genre,
+          title: bookData.title,
+          author: bookData.author,
+          publisher: bookData.publisher || null,
+          isbn: bookData.isbn,
+          price: bookData.price,
+          release_date: bookData.releaseDate,
+          c_code: bookData.cCode,
+          genre: bookData.genre,
           rank: null,
           status: '未対応',
           sns_data: {},
@@ -302,26 +416,28 @@ export async function GET(request: NextRequest) {
         })
 
         if (error) {
-          results.errors.push(`登録エラー (${book.title}): ${error.message}`)
+          results.errors.push(`登録エラー (${bookData.title}): ${error.message}`)
         } else {
           results.newlyRegistered++
           results.newBooks.push({
-            title: book.title,
-            author: book.author,
-            publisher: book.publisher,
-            rank: '調査待ち',
+            title: bookData.title,
+            author: bookData.author,
+            publisher: bookData.publisher,
           })
+          existingTitles.add(`${bookData.title}|${bookData.author}`)
+          if (bookData.isbn) existingIsbns.set(bookData.isbn, { id: '', release_date: bookData.releaseDate })
         }
       } catch (e) {
-        results.errors.push(`登録エラー (${book.title}): ${e instanceof Error ? e.message : String(e)}`)
+        results.errors.push(`登録エラー (${bookData.title}): ${e instanceof Error ? e.message : String(e)}`)
       }
     }
 
-    // 7. Slack通知（SLACK_WEBHOOK_URLが設定されている場合）
+    // 6. Slack通知
     const slackWebhook = process.env.SLACK_WEBHOOK_URL
     if (slackWebhook && results.newlyRegistered > 0) {
       try {
         const bookList = results.newBooks
+          .slice(0, 20)
           .map(b => `・『${b.title}』${b.author}（${b.publisher}）`)
           .join('\n')
 
@@ -330,8 +446,9 @@ export async function GET(request: NextRequest) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             text: `📚 新刊自動検出（${new Date().toLocaleDateString('ja-JP')}）\n\n`
-              + `【新規発見: ${results.newlyRegistered}冊】\n${bookList}\n\n`
-              + `※ SNS調査・ランク付けは未完了です\n`
+              + `【新規発見: ${results.newlyRegistered}冊】\n${bookList}\n`
+              + (results.newlyRegistered > 20 ? `...他${results.newlyRegistered - 20}冊\n` : '')
+              + `\n※ SNS調査・ランク付けは未完了です\n`
               + `ダッシュボード: https://book-monitoring.vercel.app/`,
           }),
         })
