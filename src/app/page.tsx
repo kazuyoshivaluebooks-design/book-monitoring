@@ -123,6 +123,26 @@ function SnsInfo({ snsData }: { snsData: SnsData }) {
   )
 }
 
+function BookCover({ isbn }: { isbn: string | null }) {
+  const [hasError, setHasError] = useState(false)
+  if (!isbn || hasError) {
+    return (
+      <div className="w-16 h-22 flex-shrink-0 rounded bg-gray-100 flex items-center justify-center">
+        <span className="text-gray-300 text-2xl">📖</span>
+      </div>
+    )
+  }
+  return (
+    <img
+      src={`https://cover.openbd.jp/${isbn}.jpg`}
+      alt=""
+      className="w-16 h-auto flex-shrink-0 rounded shadow-sm object-cover"
+      onError={() => setHasError(true)}
+      loading="lazy"
+    />
+  )
+}
+
 function BookCard({
   book,
   onStatusChange,
@@ -165,21 +185,26 @@ function BookCard({
         </select>
       </div>
 
-      <h3
-        className="font-bold text-base mb-1 cursor-pointer hover:text-indigo-600"
-        onClick={() => setShowDetail(!showDetail)}
-      >
-        {book.title}
-      </h3>
-      <p className="text-sm text-gray-600 mb-1">
-        {book.author}
-        {book.publisher && <span className="text-gray-400"> / {book.publisher}</span>}
-      </p>
-      {book.release_date && (
-        <span className="inline-block text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-600 mb-2">
-          📅 {book.release_date.replace(/-/g, '/')}
-        </span>
-      )}
+      <div className="flex gap-3">
+        <BookCover isbn={book.isbn} />
+        <div className="flex-1 min-w-0">
+          <h3
+            className="font-bold text-base mb-1 cursor-pointer hover:text-indigo-600"
+            onClick={() => setShowDetail(!showDetail)}
+          >
+            {book.title}
+          </h3>
+          <p className="text-sm text-gray-600 mb-1">
+            {book.author}
+            {book.publisher && <span className="text-gray-400"> / {book.publisher}</span>}
+          </p>
+          {book.release_date && (
+            <span className="inline-block text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-600 mb-2">
+              📅 {book.release_date.replace(/-/g, '/')}
+            </span>
+          )}
+        </div>
+      </div>
 
       <SnsInfo snsData={book.sns_data || {}} />
 
