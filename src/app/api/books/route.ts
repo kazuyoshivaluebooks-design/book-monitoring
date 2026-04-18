@@ -104,7 +104,7 @@ export async function GET(request: NextRequest) {
   if (rank) {
     query = query.eq('rank', rank)
   }
-  query = query.order(sort, { ascending: order === 'asc' })
+  query = query.order(sort, { ascending: order === 'asc', nullsFirst: false })
 
   const { data, error } = await query
 
