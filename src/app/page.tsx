@@ -158,7 +158,7 @@ function BookCover({ isbn }: { isbn: string | null }) {
     <img
       src={`https://cover.openbd.jp/${isbn}.jpg`}
       alt=""
-      className="w-16 h-auto flex-shrink-0 rounded shadow-sm object-cover"
+      className="w-16 h-auto max-h-24 flex-shrink-0 rounded shadow-sm object-cover"
     />
   )
 }
