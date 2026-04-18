@@ -446,24 +446,48 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // 6. Phase 2: openBDにないISBNは版元ドットコム個別ページから取得（残り時間で）
-    for (const [isbn, item] of noOpenBDItems) {
+    // 6. Phase 2: openBDにないISBNは版元ドットコム個別ページから並列取得（残り時間で）
+    const PARALLEL_HANMOTO = 5 // 同時5並列
+    let noOBIdx = 0
+    while (noOBIdx < noOpenBDItems.length) {
       const elapsed = Date.now() - startTime
-      if (elapsed > 7500) {
-        results.errors.push(`残り${noOpenBDItems.length}件は次回処理`)
+      if (elapsed > 7000) {
+        const remaining = noOpenBDItems.length - noOBIdx
+        results.errors.push(`残り${remaining}件��次回処理`)
         break
       }
 
-      try {
-        const detail = await fetchHanmotoBookDetail(item)
-        if (!detail) continue
+      // 残り時間に応じて並列数を調整
+      const timeLeft = 8000 - elapsed
+      const batchCount = timeLeft > 3000 ? PARALLEL_HANMOTO : Math.max(1, Math.floor(timeLeft / 1000))
+      const batch = noOpenBDItems.slice(noOBIdx, noOBIdx + batchCount)
+      noOBIdx += batch.length
+
+      // 並列フェッチ
+      const detailResults = await Promise.allSettled(
+        batch.map(([, item]) => fetchHanmotoBookDetail(item))
+      )
+
+      // 結果を収集してバッチ挿入
+      const phase2Inserts: Array<{
+        title: string; author: string; publisher: string | null;
+        isbn: string | null; price: number | null; release_date: string | null;
+        c_code: null; genre: null; rank: null; status: string;
+        sns_data: Record<string, never>; evaluation_reason: string; source: string;
+      }> = []
+
+      for (let i = 0; i < detailResults.length; i++) {
+        const r = detailResults[i]
+        if (r.status !== 'fulfilled' || !r.value) continue
+        const detail = r.value
+        const isbn = batch[i][0]
 
         if (existingTitles.has(`${detail.title}|${detail.author}`)) {
           results.alreadyExists++
           continue
         }
 
-        const { error } = await supabase.from('books').insert({
+        phase2Inserts.push({
           title: detail.title,
           author: detail.author,
           publisher: detail.publisher || null,
@@ -478,16 +502,23 @@ export async function GET(request: NextRequest) {
           evaluation_reason: '自動検出 - SNS調査待ち',
           source: '版元ドットコム',
         })
+        existingTitles.add(`${detail.title}|${detail.author}`)
+        existingIsbns.set(isbn, { id: '', release_date: detail.releaseDate })
+      }
 
-        if (!error) {
-          results.hanmotoResolved++
-          results.newlyRegistered++
-          results.newBooks.push({ title: detail.title, author: detail.author, publisher: detail.publisher })
-          existingTitles.add(`${detail.title}|${detail.author}`)
-          existingIsbns.set(isbn, { id: '', release_date: detail.releaseDate })
+      if (phase2Inserts.length > 0) {
+        try {
+          const { error } = await supabase.from('books').insert(phase2Inserts)
+          if (!error) {
+            results.hanmotoResolved += phase2Inserts.length
+            results.newlyRegistered += phase2Inserts.length
+            for (const row of phase2Inserts) {
+              results.newBooks.push({ title: row.title, author: row.author, publisher: row.publisher || '' })
+            }
+          }
+        } catch {
+          // ignore
         }
-      } catch {
-        continue
       }
     }
 
