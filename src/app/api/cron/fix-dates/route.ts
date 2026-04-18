@@ -6,6 +6,7 @@ export const dynamic = 'force-dynamic'
 export const maxDuration = 10
 
 // 版元ドットコムの個別ISBNページから発売日を取得
+// HTMLの <dd class="book-dates-sales" content="2026-06-17"> から取得
 async function fetchReleaseDateFromHanmoto(isbn: string): Promise<string | null> {
   try {
     const url = `https://www.hanmoto.com/bd/isbn/${isbn}`
@@ -20,19 +21,31 @@ async function fetchReleaseDateFromHanmoto(isbn: string): Promise<string | null>
 
     const html = await res.text()
     const $ = cheerio.load(html)
-    const dataScript = $('#hanmotocom-data').html()
-    if (!dataScript) return null
 
-    const data = JSON.parse(dataScript)
-    const book = data?.book?.data?.book
-    if (!book) return null
-
-    if (book.dates?.sales) {
-      return book.dates.sales.split('T')[0]
-    } else if (book.dates?.publish && book.dates.publish.length === 8) {
-      const p = book.dates.publish
-      return `${p.slice(0, 4)}-${p.slice(4, 6)}-${p.slice(6, 8)}`
+    // 方法1: <dd class="book-dates-sales" content="2026-06-17"> のcontent属性
+    const salesEl = $('dd.book-dates-sales')
+    if (salesEl.length > 0) {
+      const content = salesEl.attr('content')
+      if (content && /^\d{4}-\d{2}-\d{2}$/.test(content)) {
+        return content
+      }
+      // content属性がなければテキストからパース "2026年6月17日"
+      const text = salesEl.text().trim()
+      const match = text.match(/(\d{4})年(\d{1,2})月(\d{1,2})日/)
+      if (match) {
+        return `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`
+      }
     }
+
+    // 方法2: itemprop="datePublished" 属性
+    const dateEl = $('[itemprop="datePublished"]')
+    if (dateEl.length > 0) {
+      const content = dateEl.attr('content')
+      if (content && /^\d{4}-\d{2}-\d{2}$/.test(content)) {
+        return content
+      }
+    }
+
     return null
   } catch {
     return null

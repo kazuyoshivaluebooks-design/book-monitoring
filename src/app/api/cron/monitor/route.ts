@@ -92,59 +92,59 @@ type HanmotoBookDetail = {
 }
 
 async function fetchHanmotoBookDetail(item: HanmotoListItem): Promise<HanmotoBookDetail | null> {
-  // uniq からパスを生成（8文字の uniq を3分割+ハッシュ）
-  const uniq = item.uniq
-  if (!uniq || uniq.length < 6) return null
-
-  // URL パターン: /bd/book/uniqs/{c1c2}/{c3c4}/{c5c6}/book.{hash}.{lastupdated}.json
-  // ハッシュ部分はuniqの文字をシャッフルしたもの - 直接取得は困難
-  // 代わりに ISBN ページから取得する
   try {
     const url = `https://www.hanmoto.com/bd/isbn/${item.isbn}`
     const res = await fetch(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       },
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(4000),
     })
     if (!res.ok) return null
 
     const html = await res.text()
     const $ = cheerio.load(html)
-    const dataScript = $('#hanmotocom-data').html()
-    if (!dataScript) return null
 
-    const data = JSON.parse(dataScript)
-    const book = data?.book?.data?.book
-    if (!book) return null
-
-    // タイトル
-    const title = book.titles?.title?.text || ''
+    // タイトル: <span itemprop="name">
+    const title = $('span[itemprop="name"]').first().text().trim()
+      || $('h1').first().text().trim()
     if (!title) return null
 
-    // 著者
-    const authors = book.authors || {}
-    const authorNames = Object.values(authors)
-      .sort((a: unknown, b: unknown) => ((a as { priority: number }).priority || 0) - ((b as { priority: number }).priority || 0))
-      .map((a: unknown) => (a as { name: string }).name)
-      .filter(Boolean)
-    const author = authorNames.join(' ') || ''
+    // 著者: <span itemprop="author">
+    const author = $('span[itemprop="author"]').map((_, el) => $(el).text().trim()).get().join(' ')
+      || ''
 
-    // 出版社
-    const publisher = book.hakkou?.hatsubai || book.hakkou?.hakkou || ''
+    // 出版社: <span itemprop="publisher">
+    const publisher = $('span[itemprop="publisher"]').first().text().trim()
+      || ''
 
-    // 発売日: dates.sales (ISO形式) or dates.publish (YYYYMMDD)
+    // 発売日: <dd class="book-dates-sales" content="2026-06-17">
     let releaseDate: string | null = null
-    if (book.dates?.sales) {
-      releaseDate = book.dates.sales.split('T')[0] // "2026-06-17T00:00:00..." → "2026-06-17"
-    } else if (book.dates?.publish && book.dates.publish.length === 8) {
-      const p = book.dates.publish
-      releaseDate = `${p.slice(0, 4)}-${p.slice(4, 6)}-${p.slice(6, 8)}`
+    const salesEl = $('dd.book-dates-sales')
+    if (salesEl.length > 0) {
+      const content = salesEl.attr('content')
+      if (content && /^\d{4}-\d{2}-\d{2}$/.test(content)) {
+        releaseDate = content
+      } else {
+        const text = salesEl.text().trim()
+        const match = text.match(/(\d{4})年(\d{1,2})月(\d{1,2})日/)
+        if (match) {
+          releaseDate = `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`
+        }
+      }
+    }
+    if (!releaseDate) {
+      const dateEl = $('[itemprop="datePublished"]')
+      const content = dateEl.attr('content')
+      if (content && /^\d{4}-\d{2}-\d{2}$/.test(content)) {
+        releaseDate = content
+      }
     }
 
-    // 価格
-    const price = book.price?.fixed || null
+    // 価格: <span itemprop="price">
+    const priceText = $('span[itemprop="price"]').attr('content') || $('span[itemprop="price"]').text()
+    const price = priceText ? parseInt(priceText.replace(/[^\d]/g, ''), 10) || null : null
 
     return { title, author, publisher, isbn: item.isbn, releaseDate, price }
   } catch {
