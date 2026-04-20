@@ -146,10 +146,11 @@ export async function POST(request: NextRequest) {
 
       if (Object.keys(updateData).length === 0) continue
 
-      // SNS調査スキップ状態をリセット
+      // SNS調査スキップ状態をリセット（再調査可能に）
       if (book.evaluation_reason?.includes('SNS調査スキップ')) {
         updateData.evaluation_reason = null
-        updateData.sns_data = {}
+        // JSONB として正しく空オブジェクトを保存（文字列 "{}" にならないよう注意）
+        updateData.sns_data = { _needsRecheck: true }
         resetForSns++
       }
 
