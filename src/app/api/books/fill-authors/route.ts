@@ -6,20 +6,73 @@ export const maxDuration = 10
 
 /**
  * POST /api/books/fill-authors
- * 著者名が空の書籍に対して openBD API で著者名・出版社を補完する
+ * 著者名が空の書籍に対して openBD + Google Books API で著者名・出版社を補完する
  *
- * openBD は ISBN を最大1000件まで一括取得可能
- * https://openbd.jp/
+ * 1) openBD で一括取得（無料、ISBN一括対応）
+ * 2) openBD で見つからなかった分を Google Books API で個別取得
  *
- * Body: { limit?: number } (default: 100)
+ * 補完後、SNS調査スキップ状態を自動リセット
  *
- * 補完後、evaluation_reason に 'SNS調査スキップ' が含まれる書籍の
- * evaluation_reason と sns_data をリセットしてSNS再調査可能にする
+ * Body: { limit?: number } (default: 50)
  */
+
+/** openBD から著者・出版社を一括取得 */
+async function fetchFromOpenBD(isbnList: string[]): Promise<Map<string, { author: string; publisher: string }>> {
+  const result = new Map<string, { author: string; publisher: string }>()
+  if (isbnList.length === 0) return result
+
+  try {
+    const url = `https://api.openbd.jp/v1/get?isbn=${isbnList.join(',')}`
+    const res = await fetch(url, { signal: AbortSignal.timeout(6000) })
+    if (!res.ok) return result
+
+    const data = await res.json()
+    if (!Array.isArray(data)) return result
+
+    for (let i = 0; i < data.length; i++) {
+      const item = data[i]
+      if (!item?.summary) continue
+      const author = item.summary.author || ''
+      const publisher = item.summary.publisher || ''
+      if (author) {
+        result.set(isbnList[i], { author, publisher })
+      }
+    }
+  } catch {
+    // openBD エラーは無視して Google Books にフォールバック
+  }
+
+  return result
+}
+
+/** Google Books API から著者・出版社を個別取得 */
+async function fetchFromGoogleBooks(
+  isbn: string,
+  apiKey: string
+): Promise<{ author: string; publisher: string } | null> {
+  try {
+    const url = `https://www.googleapis.com/books/v1/volumes?q=isbn:${isbn}&key=${apiKey}&maxResults=1`
+    const res = await fetch(url, { signal: AbortSignal.timeout(4000) })
+    if (!res.ok) return null
+
+    const data = await res.json()
+    const item = data.items?.[0]?.volumeInfo
+    if (!item) return null
+
+    const author = item.authors?.join('、') || ''
+    const publisher = item.publisher || ''
+    if (!author) return null
+
+    return { author, publisher }
+  } catch {
+    return null
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json().catch(() => ({}))
-    const limit = Math.min(body.limit || 100, 200)
+    const limit = Math.min(body.limit || 50, 100)
 
     // 著者名が空の書籍を取得
     const { data: booksNoAuthor, error } = await supabase
@@ -41,61 +94,49 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    // ISBNリストを作成（ハイフンなし13桁に正規化）
-    const isbnList = booksNoAuthor
-      .map(b => b.isbn?.replace(/[^0-9X]/gi, ''))
-      .filter((isbn): isbn is string => !!isbn && isbn.length >= 10)
+    const startTime = Date.now()
 
-    if (isbnList.length === 0) {
-      return NextResponse.json({
-        message: '有効なISBNがありません',
-        updated: 0,
-        remaining: 0,
-      })
+    // ISBNリストを正規化
+    const bookIsbnMap = new Map<string, typeof booksNoAuthor[0]>()
+    for (const book of booksNoAuthor) {
+      const isbn = book.isbn?.replace(/[^0-9X]/gi, '')
+      if (isbn && isbn.length >= 10) {
+        bookIsbnMap.set(isbn, book)
+      }
     }
+    const isbnList = Array.from(bookIsbnMap.keys())
 
-    // openBD API で一括取得（最大1000件、カンマ区切り）
-    const openbdUrl = `https://api.openbd.jp/v1/get?isbn=${isbnList.join(',')}`
-    const openbdRes = await fetch(openbdUrl, { signal: AbortSignal.timeout(8000) })
+    // 1) openBD で一括取得
+    const openbdResults = await fetchFromOpenBD(isbnList)
 
-    if (!openbdRes.ok) {
-      return NextResponse.json(
-        { error: `openBD API error: HTTP ${openbdRes.status}` },
-        { status: 502 }
-      )
-    }
+    // 2) openBD で見つからなかった分を Google Books で取得
+    const googleApiKey = process.env.GOOGLE_SEARCH_API_KEY || process.env.YOUTUBE_API_KEY
+    const notFoundIsbns = isbnList.filter(isbn => !openbdResults.has(isbn))
+    const googleResults = new Map<string, { author: string; publisher: string }>()
 
-    const openbdData = await openbdRes.json()
-
-    // ISBN → openBD データのマップを作成
-    const openbdMap = new Map<string, { author: string; publisher: string }>()
-    if (Array.isArray(openbdData)) {
-      for (let i = 0; i < openbdData.length; i++) {
-        const item = openbdData[i]
-        if (!item || !item.summary) continue
-        const isbn = isbnList[i]
-        const author = item.summary.author || ''
-        const publisher = item.summary.publisher || ''
-        if (author || publisher) {
-          openbdMap.set(isbn, { author, publisher })
+    if (googleApiKey && notFoundIsbns.length > 0) {
+      for (const isbn of notFoundIsbns) {
+        if (Date.now() - startTime > 7500) break // タイムアウト防止
+        const result = await fetchFromGoogleBooks(isbn, googleApiKey)
+        if (result) {
+          googleResults.set(isbn, result)
         }
       }
     }
 
+    // 結果を統合
+    const allResults = new Map([...openbdResults, ...googleResults])
+
     // Supabase を更新
     let updated = 0
     let resetForSns = 0
-    const results: Array<{ isbn: string; title: string; author: string; publisher: string }> = []
+    const results: Array<{ isbn: string; title: string; author: string; publisher: string; source: string }> = []
 
-    for (const book of booksNoAuthor) {
-      const isbn = book.isbn?.replace(/[^0-9X]/gi, '')
-      if (!isbn) continue
+    for (const [isbn, info] of allResults) {
+      const book = bookIsbnMap.get(isbn)
+      if (!book) continue
 
-      const info = openbdMap.get(isbn)
-      if (!info || !info.author) continue
-
-      // 著者名と出版社を更新
-      const updateData: Record<string, string | null> = {}
+      const updateData: Record<string, unknown> = {}
       if (info.author && (!book.author || book.author.trim() === '')) {
         updateData.author = info.author
       }
@@ -105,10 +146,10 @@ export async function POST(request: NextRequest) {
 
       if (Object.keys(updateData).length === 0) continue
 
-      // SNS調査スキップ状態をリセット（著者名が入ったので再調査可能に）
+      // SNS調査スキップ状態をリセット
       if (book.evaluation_reason?.includes('SNS調査スキップ')) {
-        updateData.evaluation_reason = null as unknown as string
-        updateData.sns_data = '{}' as unknown as string
+        updateData.evaluation_reason = null
+        updateData.sns_data = {}
         resetForSns++
       }
 
@@ -124,6 +165,7 @@ export async function POST(request: NextRequest) {
           title: book.title,
           author: info.author,
           publisher: info.publisher,
+          source: openbdResults.has(isbn) ? 'openBD' : 'GoogleBooks',
         })
       }
     }
@@ -136,11 +178,13 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       processed: booksNoAuthor.length,
-      found: openbdMap.size,
+      foundOpenBD: openbdResults.size,
+      foundGoogle: googleResults.size,
       updated,
       resetForSns,
       remaining: remainingCount || 0,
-      results: results.slice(0, 30), // サンプル表示
+      elapsedMs: Date.now() - startTime,
+      results: results.slice(0, 30),
     })
   } catch (e) {
     return NextResponse.json(
