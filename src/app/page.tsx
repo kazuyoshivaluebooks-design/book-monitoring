@@ -501,9 +501,11 @@ export default function Dashboard() {
     pending: books.filter(b => b.status === '未対応').length,
     ordered: books.filter(b => b.status === '仕入済').length,
     noSns: books.filter(b => {
+      // ランク付き or 評価理由ありの書籍は調査済み
+      if (b.rank) return false
+      if (b.evaluation_reason && b.evaluation_reason.length > 0) return false
       const sd = b.sns_data
-      return (!sd || typeof sd !== 'object' || Object.keys(sd).length === 0) &&
-        (!b.evaluation_reason || !b.evaluation_reason.includes('スキップ'))
+      return (!sd || typeof sd !== 'object' || Object.keys(sd).length === 0)
     }).length,
   }
 
