@@ -182,7 +182,7 @@ async function getPendingCount(): Promise<number> {
     .from('books')
     .select('id', { count: 'exact', head: true })
     .is('rank', null)
-    .eq('sns_data', '{}')
+    .or('sns_data.eq.{},sns_data.is.null')
     .not('evaluation_reason', 'like', '%SNS調査スキップ%')
   return count || 0
 }
@@ -199,7 +199,7 @@ export async function GET(request: NextRequest) {
       .from('books')
       .select('id, title, author, evaluation_reason')
       .is('rank', null)
-      .eq('sns_data', '{}')
+      .or('sns_data.eq.{},sns_data.is.null')
       .not('evaluation_reason', 'like', '%SNS調査スキップ%')
       .order('release_date', { ascending: true, nullsFirst: false })
       .limit(Math.min(limit, 10))
