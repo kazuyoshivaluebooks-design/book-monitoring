@@ -109,11 +109,16 @@ async function checkSingleBook(bookId: string): Promise<{
   )
 
   // 4. Supabase を更新
+  // sns_data が空の場合でも「調査済み」マーカーを付与して再処理を防止
+  const finalSnsData = Object.keys(rankResult.snsData).length === 0
+    ? { _checked: true, _checkedAt: new Date().toISOString() }
+    : { ...rankResult.snsData, _checkedAt: new Date().toISOString() }
+
   const { error: updateError } = await supabase
     .from('books')
     .update({
       rank: rankResult.rank,
-      sns_data: rankResult.snsData,
+      sns_data: finalSnsData,
       evaluation_reason: rankResult.evaluationReason,
     })
     .eq('id', bookId)
