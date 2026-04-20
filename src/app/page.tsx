@@ -364,35 +364,126 @@ export default function Dashboard() {
 
   // --- SNS 一括調査 ---
   const [snsRunning, setSnsRunning] = useState(false)
-  const [snsProgress, setSnsProgress] = useState({ processed: 0, remaining: 0, errors: 0 })
+  const [snsProgress, setSnsProgress] = useState({ processed: 0, remaining: 0, errors: 0, message: '' })
   const snsAbort = useState<AbortController | null>(null)
 
   const startSnsBatch = useCallback(async () => {
     if (snsRunning) return
     setSnsRunning(true)
-    setSnsProgress({ processed: 0, remaining: 0, errors: 0 })
+    setSnsProgress({ processed: 0, remaining: 0, errors: 0, message: '開始中...' })
     const controller = new AbortController()
     snsAbort[1](controller)
     let totalProcessed = 0
     let errors = 0
+    let consecutiveErrors = 0
+    const MAX_RETRIES = 3
 
     try {
       while (!controller.signal.aborted) {
-        const res = await fetch('/api/sns/check?limit=3', { signal: controller.signal })
-        const data = await res.json()
+        let data: { processed?: number; remaining?: number; results?: Array<{ error?: string }>; quotaExhausted?: boolean; quotaError?: string; error?: string } | null = null
+
+        // フェッチ + リトライロジック
+        for (let retry = 0; retry <= MAX_RETRIES; retry++) {
+          try {
+            const res = await fetch('/api/sns/check?limit=3', {
+              signal: controller.signal,
+            })
+
+            // クォータ切れ (429)
+            if (res.status === 429) {
+              const errData = await res.json().catch(() => ({}))
+              setSnsProgress(prev => ({
+                ...prev,
+                message: `⚠️ Google APIクォータ超過 — 本日の残り調査は明日再開されます（${totalProcessed}冊完了）`,
+              }))
+              // クォータ切れは復旧不可なので終了
+              return
+            }
+
+            // その他のHTTPエラー
+            if (!res.ok) {
+              const text = await res.text().catch(() => `HTTP ${res.status}`)
+              console.warn(`[SNS batch] HTTP ${res.status}:`, text)
+              if (retry < MAX_RETRIES) {
+                await new Promise(r => setTimeout(r, 3000 * (retry + 1)))
+                continue
+              }
+              // リトライ上限 — この回はスキップして次バッチへ
+              consecutiveErrors++
+              break
+            }
+
+            data = await res.json()
+            consecutiveErrors = 0  // 成功したのでリセット
+            break
+          } catch (e) {
+            if (controller.signal.aborted) return
+            console.warn(`[SNS batch] fetch error (retry ${retry}):`, e)
+            if (retry < MAX_RETRIES) {
+              await new Promise(r => setTimeout(r, 3000 * (retry + 1)))
+              continue
+            }
+            consecutiveErrors++
+          }
+        }
+
+        // 5回連続エラーなら停止
+        if (consecutiveErrors >= 5) {
+          setSnsProgress(prev => ({
+            ...prev,
+            message: `❌ 連続エラーにより停止（${totalProcessed}冊完了）。しばらく待ってから再開してください。`,
+          }))
+          return
+        }
+
+        if (!data) {
+          // データ取得失敗だが連続エラー上限未満 → 少し待って続行
+          await new Promise(r => setTimeout(r, 5000))
+          continue
+        }
+
+        // クォータ切れレスポンス（ステータス200だがフラグ付き）
+        if (data.quotaExhausted) {
+          totalProcessed += data.processed || 0
+          setSnsProgress({
+            processed: totalProcessed,
+            remaining: data.remaining || 0,
+            errors,
+            message: `⚠️ Google APIクォータ超過 — ${totalProcessed}冊完了、残りは明日再開されます`,
+          })
+          return
+        }
+
         totalProcessed += data.processed || 0
         if (data.results) {
-          errors += data.results.filter((r: { error?: string }) => r.error).length
+          errors += data.results.filter((r) => r.error).length
         }
-        setSnsProgress({ processed: totalProcessed, remaining: data.remaining || 0, errors })
+        setSnsProgress({
+          processed: totalProcessed,
+          remaining: data.remaining || 0,
+          errors,
+          message: '',
+        })
 
+        // 完了判定
         if (data.remaining === 0 || data.processed === 0) break
 
+        // 定期的にブックリストを更新（50冊ごと）
+        if (totalProcessed > 0 && totalProcessed % 50 < 3) {
+          fetchBooks()
+        }
+
         // 少し待ってから次のバッチ（API負荷軽減）
-        await new Promise(r => setTimeout(r, 2000))
+        await new Promise(r => setTimeout(r, 1500))
       }
-    } catch {
-      // AbortError or network error
+    } catch (e) {
+      if (!(e instanceof DOMException && (e as DOMException).name === 'AbortError')) {
+        console.error('[SNS batch] unexpected error:', e)
+        setSnsProgress(prev => ({
+          ...prev,
+          message: `❌ エラー: ${e instanceof Error ? e.message : String(e)}`,
+        }))
+      }
     } finally {
       setSnsRunning(false)
       fetchBooks()  // 完了後にリストを更新
@@ -440,11 +531,15 @@ export default function Dashboard() {
                 </button>
               )}
               {snsRunning && (
-                <div className="flex items-center gap-2 ml-2">
+                <div className="flex items-center gap-2 ml-2 flex-wrap">
                   <div className="animate-spin w-3 h-3 border-2 border-indigo-500 border-t-transparent rounded-full" />
                   <span className="text-indigo-600 font-medium">
                     調査中... {snsProgress.processed}冊完了 / 残{snsProgress.remaining}冊
+                    {snsProgress.errors > 0 && <span className="text-orange-500 ml-1">({snsProgress.errors}件エラー)</span>}
                   </span>
+                  {snsProgress.message && (
+                    <span className="text-xs text-orange-600 block w-full mt-0.5">{snsProgress.message}</span>
+                  )}
                   <button
                     onClick={stopSnsBatch}
                     className="px-2 py-0.5 bg-gray-200 text-gray-600 rounded hover:bg-gray-300 text-xs"
@@ -452,6 +547,9 @@ export default function Dashboard() {
                     停止
                   </button>
                 </div>
+              )}
+              {!snsRunning && snsProgress.message && (
+                <span className="text-xs text-orange-600 ml-2">{snsProgress.message}</span>
               )}
             </div>
           </div>

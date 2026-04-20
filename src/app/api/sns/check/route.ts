@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import { searchYouTubeAuthor } from '@/lib/sns/youtube'
-import { searchSocialProfiles } from '@/lib/sns/social-search'
+import { searchSocialProfiles, QuotaExhaustedError } from '@/lib/sns/social-search'
 import { rankBook } from '@/lib/sns/ranker'
 
 export const dynamic = 'force-dynamic'
-export const maxDuration = 60
+export const maxDuration = 10  // Vercel Hobby plan: max 10秒
 
 /**
  * POST /api/sns/check
@@ -72,7 +72,7 @@ async function checkSingleBook(bookId: string): Promise<{
     ? await searchYouTubeAuthor(authorName, youtubeApiKey)
     : null
 
-  // 2. X/Instagram/Facebook 調査
+  // 2. X/Instagram/Facebook 調査（QuotaExhaustedError はそのまま投げる）
   const googleSearchApiKey = process.env.GOOGLE_SEARCH_API_KEY
   const googleSearchCx = process.env.GOOGLE_SEARCH_CX
   const socialProfiles = await searchSocialProfiles(
@@ -156,6 +156,12 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ results })
   } catch (e) {
+    if (e instanceof QuotaExhaustedError) {
+      return NextResponse.json(
+        { error: e.message, quotaExhausted: true, processed: 0, remaining: -1 },
+        { status: 429 }
+      )
+    }
     return NextResponse.json(
       { error: e instanceof Error ? e.message : String(e) },
       { status: 500 }
@@ -207,22 +213,30 @@ export async function GET(request: NextRequest) {
     }
 
     const startTime = Date.now()
-    const results = []
-    const PARALLEL = 2
-    let idx = 0
+    const results: Array<{ bookId?: string; title?: string; author?: string; rank?: string | null; evaluationReason?: string; error?: string }> = []
 
-    while (idx < pendingBooks.length) {
-      if (Date.now() - startTime > 8000) break
+    // Hobby plan: 1冊ずつ順次処理（タイムアウト回避）
+    for (const book of pendingBooks) {
+      if (Date.now() - startTime > 7000) break  // 7秒で打ち切り（10秒制限に余裕）
 
-      const batch = pendingBooks.slice(idx, idx + PARALLEL)
-      const batchResults = await Promise.allSettled(
-        batch.map(book => checkSingleBook(book.id))
-      )
-      for (const r of batchResults) {
-        if (r.status === 'fulfilled') results.push(r.value)
-        else results.push({ error: String(r.reason) })
+      try {
+        const result = await checkSingleBook(book.id)
+        results.push(result)
+      } catch (e) {
+        if (e instanceof QuotaExhaustedError) {
+          // クォータ切れ — 処理済み分と一緒に返す
+          const remaining = await getPendingCount()
+          return NextResponse.json({
+            processed: results.length,
+            remaining,
+            results,
+            quotaExhausted: true,
+            quotaError: e.message,
+            elapsedMs: Date.now() - startTime,
+          })
+        }
+        results.push({ bookId: book.id, error: String(e) })
       }
-      idx += PARALLEL
     }
 
     const remaining = await getPendingCount()
@@ -234,6 +248,12 @@ export async function GET(request: NextRequest) {
       elapsedMs: Date.now() - startTime,
     })
   } catch (e) {
+    if (e instanceof QuotaExhaustedError) {
+      return NextResponse.json(
+        { error: e.message, quotaExhausted: true, processed: 0 },
+        { status: 429 }
+      )
+    }
     return NextResponse.json(
       { error: e instanceof Error ? e.message : String(e) },
       { status: 500 }
