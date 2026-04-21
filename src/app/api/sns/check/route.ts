@@ -109,6 +109,14 @@ async function checkSingleBook(bookId: string): Promise<{
     anthropicApiKey
   )
 
+  // デバッグ: 検索結果の詳細をevaluation_reasonに追加
+  if (rawResults.length > 0) {
+    const debugInfo = rawResults.slice(0, 3).map(r => `[${r.title}](${r.url})`).join('; ')
+    rankResult.evaluationReason += ` [検索ヒット${rawResults.length}件: ${debugInfo.slice(0, 200)}]`
+  } else {
+    rankResult.evaluationReason += ' [Google検索: 結果0件]'
+  }
+
   // 4. Supabase を更新
   // sns_data が空の場合でも「調査済み」マーカーを付与して再処理を防止
   const finalSnsData = Object.keys(rankResult.snsData).length === 0
