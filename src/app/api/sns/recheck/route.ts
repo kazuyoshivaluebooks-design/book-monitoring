@@ -17,16 +17,26 @@ export async function POST(request: NextRequest) {
     const body = await request.json().catch(() => ({}))
     const limit = body.limit || 9999
 
-    // ランクなし＋著者名あり＋調査済み（evaluation_reasonが存在）の書籍を取得
-    const { data: books, error } = await supabase
+    const resetAll = body.resetAll === true
+
+    // resetAll: 全書籍を再調査（Claude API修正後の再評価用）
+    // 通常: ランクなし＋著者名あり＋調査済みの書籍のみ
+    let query = supabase
       .from('books')
       .select('id, title, author, release_date, evaluation_reason')
-      .is('rank', null)
       .not('author', 'is', null)
       .not('author', 'eq', '')
-      .not('evaluation_reason', 'is', null)
-      .not('evaluation_reason', 'like', '%SNS調査スキップ%')
-      .limit(limit)
+
+    if (!resetAll) {
+      query = query
+        .is('rank', null)
+        .not('evaluation_reason', 'is', null)
+        .not('evaluation_reason', 'like', '%SNS調査スキップ%')
+    } else {
+      query = query.not('evaluation_reason', 'is', null)
+    }
+
+    const { data: books, error } = await query.limit(limit)
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 })
