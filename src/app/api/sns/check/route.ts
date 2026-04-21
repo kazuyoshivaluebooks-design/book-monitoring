@@ -5,7 +5,7 @@ import { searchSocialProfiles, QuotaExhaustedError } from '@/lib/sns/social-sear
 import { rankBook } from '@/lib/sns/ranker'
 
 export const dynamic = 'force-dynamic'
-export const maxDuration = 10  // Vercel Hobby plan: max 10秒
+export const maxDuration = 10  // Vercel Hobby plan: max 10s
 
 /**
  * POST /api/sns/check
