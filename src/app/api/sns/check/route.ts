@@ -72,10 +72,10 @@ async function checkSingleBook(bookId: string): Promise<{
     ? await searchYouTubeAuthor(authorName, youtubeApiKey)
     : null
 
-  // 2. X/Instagram/Facebook 調査（QuotaExhaustedError はそのまま投げる）
+  // 2. SNS検索（汎用検索2回 → URL判別 + 生データをClaudeに渡す）
   const googleSearchApiKey = process.env.GOOGLE_SEARCH_API_KEY
   const googleSearchCx = process.env.GOOGLE_SEARCH_CX
-  const socialProfiles = await searchSocialProfiles(
+  const { profiles: socialProfiles, rawResults } = await searchSocialProfiles(
     authorName,
     googleSearchApiKey,
     googleSearchCx
@@ -105,6 +105,7 @@ async function checkSingleBook(bookId: string): Promise<{
     },
     youtube,
     socialProfiles,
+    rawResults,
     anthropicApiKey
   )
 
