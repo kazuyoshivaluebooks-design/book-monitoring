@@ -5,13 +5,10 @@
  *   GOOGLE_SEARCH_API_KEY  - Google Cloud Console で取得
  *   GOOGLE_SEARCH_CX       - Custom Search Engine ID
  *
- * 無料枠: 100クエリ/日
- * 有料: $5/1,000クエリ
+ * Billing 有効: $5/1,000クエリ（無料枠100/日超過分）
+ * 1冊あたり8クエリ（プラットフォーム別検索で高精度）
  *
  * ※ API キーが未設定の場合はスキップして空配列を返す
- *
- * 最適化: 8プラットフォーム個別検索 → 2クエリ（SNS + 音声メディア）にOR結合
- *   → 1冊あたり2クエリ → 無料枠で50冊/日処理可能
  */
 
 export type SocialProfile = {
@@ -30,25 +27,9 @@ export class QuotaExhaustedError extends Error {
   }
 }
 
-// URL からプラットフォームを判定
-function detectPlatform(url: string): SocialProfile['platform'] | null {
-  if (url.includes('x.com') || url.includes('twitter.com')) return 'x'
-  if (url.includes('instagram.com')) return 'instagram'
-  if (url.includes('facebook.com')) return 'facebook'
-  if (url.includes('tiktok.com')) return 'tiktok'
-  if (url.includes('voicy.jp')) return 'voicy'
-  if (url.includes('stand.fm')) return 'standfm'
-  if (url.includes('podcasts.apple.com') || url.includes('open.spotify.com/show')) return 'podcast'
-  if (url.includes('note.com')) return 'note'
-  return null
-}
-
 /**
- * Google Custom Search で著者のSNSプロフィールを検索（最適化版）
- *
- * 2クエリで8プラットフォームをカバー:
- *  1) SNS系: x.com, twitter.com, instagram.com, facebook.com, tiktok.com, note.com
- *  2) 音声系: voicy.jp, stand.fm, podcasts.apple.com, open.spotify.com
+ * Google Custom Search で著者のSNSプロフィールを検索
+ * プラットフォームごとに個別検索（精度重視）
  */
 export async function searchSocialProfiles(
   authorName: string,
@@ -59,33 +40,34 @@ export async function searchSocialProfiles(
 
   const profiles: SocialProfile[] = []
 
-  // 2つのバッチクエリ（OR結合）
-  const queries = [
-    {
-      // SNS系: 10件取得（6プラットフォーム分）
-      query: `${authorName} site:x.com OR site:twitter.com OR site:instagram.com OR site:facebook.com OR site:tiktok.com OR site:note.com`,
-      num: 10,
-    },
-    {
-      // 音声メディア系: 5件取得（3プラットフォーム分）
-      query: `${authorName} site:voicy.jp OR site:stand.fm OR site:podcasts.apple.com OR site:open.spotify.com`,
-      num: 5,
-    },
+  // 各プラットフォームで個別検索（精度重視）
+  const platforms: Array<{
+    platform: SocialProfile['platform']
+    site: string
+    label: string
+  }> = [
+    { platform: 'x', site: 'x.com OR site:twitter.com', label: 'X/Twitter' },
+    { platform: 'instagram', site: 'instagram.com', label: 'Instagram' },
+    { platform: 'facebook', site: 'facebook.com', label: 'Facebook' },
+    { platform: 'tiktok', site: 'tiktok.com', label: 'TikTok' },
+    { platform: 'voicy', site: 'voicy.jp', label: 'Voicy' },
+    { platform: 'standfm', site: 'stand.fm', label: 'stand.fm' },
+    { platform: 'podcast', site: 'podcasts.apple.com OR site:open.spotify.com/show', label: 'Podcast' },
+    { platform: 'note', site: 'note.com', label: 'note' },
   ]
 
-  for (const { query, num } of queries) {
+  for (const { platform, site } of platforms) {
     try {
-      const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${cx}&q=${encodeURIComponent(query)}&num=${num}`
-      const res = await fetch(url, { signal: AbortSignal.timeout(8000) })
+      const query = `${authorName} site:${site}`
+      const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${cx}&q=${encodeURIComponent(query)}&num=3`
+      const res = await fetch(url, { signal: AbortSignal.timeout(5000) })
 
       if (res.status === 429 || res.status === 403) {
-        // クォータ切れ — 呼び出し元に通知
         const errorData = await res.json().catch(() => ({}))
         const reason = errorData?.error?.message || `HTTP ${res.status}`
         if (reason.includes('Quota') || reason.includes('quota') || reason.includes('rateLimitExceeded') || res.status === 429) {
           throw new QuotaExhaustedError(`Google Custom Search APIクォータ超過: ${reason}`)
         }
-        // 403 だがクォータ以外の理由の場合はスキップ
         continue
       }
 
@@ -94,28 +76,25 @@ export async function searchSocialProfiles(
       const data = await res.json()
       const items = data.items || []
 
-      // 各プラットフォームごとに最初の1件のみ採用（重複防止）
-      const seenPlatforms = new Set(profiles.map(p => p.platform))
-
-      for (const item of items) {
-        const itemUrl = item.link || ''
-        const platform = detectPlatform(itemUrl)
-        if (!platform || seenPlatforms.has(platform)) continue
-
-        seenPlatforms.add(platform)
+      if (items.length > 0) {
+        const item = items[0]
+        const profileUrl = item.link || ''
         const snippet = item.snippet || ''
+        const displayName = item.title || null
+
+        const estimatedFollowers = parseFollowerCount(snippet)
+
         profiles.push({
           platform,
-          url: itemUrl,
-          displayName: item.title || null,
+          url: profileUrl,
+          displayName,
           snippet: snippet.slice(0, 200),
-          estimatedFollowers: parseFollowerCount(snippet),
+          estimatedFollowers,
         })
       }
     } catch (e) {
-      // QuotaExhaustedError は再スロー
       if (e instanceof QuotaExhaustedError) throw e
-      // その他のエラー（タイムアウト等）は無視して次のクエリへ
+      // 個別プラットフォームのエラーは無視
     }
   }
 
