@@ -181,9 +181,9 @@ async function getPendingCount(): Promise<number> {
   const { count } = await supabase
     .from('books')
     .select('id', { count: 'exact', head: true })
-    .is('rank', null)
-    .or('sns_data.eq.{},sns_data.is.null')
-    .not('evaluation_reason', 'like', '%SNS調査スキップ%')
+    .is('evaluation_reason', null)
+    .not('author', 'is', null)
+    .not('author', 'eq', '')
   return count || 0
 }
 
@@ -198,9 +198,9 @@ export async function GET(request: NextRequest) {
     const { data: pendingBooks, error } = await supabase
       .from('books')
       .select('id, title, author, evaluation_reason')
-      .is('rank', null)
-      .or('sns_data.eq.{},sns_data.is.null')
-      .not('evaluation_reason', 'like', '%SNS調査スキップ%')
+      .is('evaluation_reason', null)
+      .not('author', 'is', null)
+      .not('author', 'eq', '')
       .order('release_date', { ascending: true, nullsFirst: false })
       .limit(Math.min(limit, 10))
 
