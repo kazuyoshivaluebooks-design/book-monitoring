@@ -56,7 +56,14 @@ export async function searchSocialProfiles(
     { platform: 'note', site: 'note.com', label: 'note' },
   ]
 
-  for (const { platform, site } of platforms) {
+  for (let i = 0; i < platforms.length; i++) {
+    const { platform, site } = platforms[i]
+
+    // レートリミット回避: 2クエリごとに300ms待機
+    if (i > 0 && i % 2 === 0) {
+      await new Promise(r => setTimeout(r, 300))
+    }
+
     try {
       const query = `${authorName} site:${site}`
       const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${cx}&q=${encodeURIComponent(query)}&num=3`
@@ -66,6 +73,26 @@ export async function searchSocialProfiles(
         const errorData = await res.json().catch(() => ({}))
         const reason = errorData?.error?.message || `HTTP ${res.status}`
         if (reason.includes('Quota') || reason.includes('quota') || reason.includes('rateLimitExceeded') || res.status === 429) {
+          // レートリミットの場合、少し待ってリトライ
+          if (reason.includes('rateLimitExceeded') || res.status === 429) {
+            await new Promise(r => setTimeout(r, 1000))
+            const retryRes = await fetch(url, { signal: AbortSignal.timeout(5000) })
+            if (retryRes.ok) {
+              const retryData = await retryRes.json()
+              const items = retryData.items || []
+              if (items.length > 0) {
+                const item = items[0]
+                profiles.push({
+                  platform,
+                  url: item.link || '',
+                  displayName: item.title || null,
+                  snippet: (item.snippet || '').slice(0, 200),
+                  estimatedFollowers: parseFollowerCount(item.snippet || ''),
+                })
+              }
+              continue
+            }
+          }
           throw new QuotaExhaustedError(`Google Custom Search APIクォータ超過: ${reason}`)
         }
         continue

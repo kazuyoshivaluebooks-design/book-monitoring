@@ -385,7 +385,7 @@ export default function Dashboard() {
         // フェッチ + リトライロジック
         for (let retry = 0; retry <= MAX_RETRIES; retry++) {
           try {
-            const res = await fetch('/api/sns/check?limit=3', {
+            const res = await fetch('/api/sns/check?limit=1', {
               signal: controller.signal,
             })
 
@@ -474,7 +474,7 @@ export default function Dashboard() {
         }
 
         // 少し待ってから次のバッチ（API負荷軽減）
-        await new Promise(r => setTimeout(r, 1500))
+        await new Promise(r => setTimeout(r, 3000))
       }
     } catch (e) {
       if (!(e instanceof DOMException && (e as DOMException).name === 'AbortError')) {
