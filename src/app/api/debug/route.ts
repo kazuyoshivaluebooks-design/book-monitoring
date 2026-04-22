@@ -26,6 +26,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       query: q,
       cx,
+      apiKeyPrefix: apiKey.slice(0, 10) + '...',
       apiStatus: res.status,
       totalResults: data.searchInformation?.totalResults,
       itemCount: data.items?.length || 0,
