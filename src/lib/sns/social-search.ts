@@ -50,7 +50,8 @@ function detectPlatform(url: string): SocialProfile['platform'] | null {
 
 /**
  * Google Custom Search で著者のSNSプロフィールを検索
- * site:制限なしの汎用検索2回でヒット率を向上（8クエリ→2クエリ）
+ * CSEが11のSNSサイトに制限済み（YouTube, X, Instagram, TikTok等）
+ * クエリは著者名のみでシンプルに → サイト制限がフィルタの役割
  *
  * 返り値:
  *   profiles: プラットフォーム別に整理したプロフィール
@@ -65,10 +66,10 @@ export async function searchSocialProfiles(
 
   const allItems: Array<{ title: string; link: string; snippet: string }> = []
 
-  // 2回の汎用検索（site:制限なし）
+  // 2回の検索（CSEがSNSサイトに限定済み → クエリはシンプルに）
   const queries = [
-    `${authorName} YouTube X Twitter Instagram フォロワー`,
-    `${authorName} TikTok Facebook podcast Voicy note`,
+    `"${authorName}"`,
+    `${authorName} 公式`,
   ]
 
   for (let i = 0; i < queries.length; i++) {
