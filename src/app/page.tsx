@@ -323,7 +323,7 @@ export default function Dashboard() {
   }, [search, filterStatus, filterRank])
 
   // クライアント側で2段階ソート
-  // ランクソートが含まれる場合、未調査書籍は最下部に押し下げる
+  // ランクソートが含まれる場合、ランク付き書籍のみ表示（未ランクを除外）
   const sortedBooks = (() => {
     const [f1, o1] = sort1.split(':') as [SortKey, SortDir]
     const hasSort2 = sort2 !== ''
@@ -331,14 +331,12 @@ export default function Dashboard() {
 
     const usesRankSort = f1 === 'rank' || (hasSort2 && f2 === 'rank')
 
-    return [...books].sort((a, b) => {
-      // ランクソート使用時: 調査済みを上、未調査を下に
-      if (usesRankSort) {
-        const aChecked = !!(a.evaluation_reason && a.evaluation_reason.length > 0)
-        const bChecked = !!(b.evaluation_reason && b.evaluation_reason.length > 0)
-        if (aChecked !== bChecked) return aChecked ? -1 : 1
-      }
+    // ランクソート時はランク付きの書籍のみに絞り込む
+    const filtered = usesRankSort
+      ? books.filter(b => b.rank && RANK_PRIORITY[b.rank] !== undefined)
+      : books
 
+    return [...filtered].sort((a, b) => {
       const cmp1 = compareByField(a, b, f1, o1)
       if (cmp1 !== 0) return cmp1
       if (hasSort2) return compareByField(a, b, f2, o2)
