@@ -230,6 +230,12 @@ function BookCard({
 
       <SnsInfo snsData={book.sns_data || {}} />
 
+      {book.evaluation_reason && (
+        <div className="mt-2 bg-amber-50 rounded p-2 text-xs text-amber-800">
+          <span className="font-bold">判定根拠:</span> {book.evaluation_reason}
+        </div>
+      )}
+
       {showDetail && (
         <div className="mt-3 pt-3 border-t border-gray-100 space-y-2 text-sm">
           <div className="grid grid-cols-2 gap-2 text-gray-600">
@@ -253,11 +259,6 @@ function BookCard({
               {new Date(book.discovered_at).toLocaleDateString('ja-JP')}
             </div>
           </div>
-          {book.evaluation_reason && (
-            <div className="bg-amber-50 rounded p-2 text-xs text-amber-800">
-              <span className="font-bold">判定根拠:</span> {book.evaluation_reason}
-            </div>
-          )}
           <div className="flex justify-end pt-1">
             {!confirmDelete ? (
               <button
