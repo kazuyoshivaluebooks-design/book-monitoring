@@ -64,16 +64,28 @@ export async function GET(request: NextRequest) {
       'https://search.ononoki.org',
       'https://searx.tiekoetter.com',
       'https://searx.be',
+      'https://search.sapti.me',
+      'https://searx.nixnet.services',
+      'https://searx.work',
+      'https://search.bus-hit.me',
+      'https://searx.zhenyapav.com',
+      'https://search.mdosch.de',
+      'https://searx.juancord.xyz',
     ]
+
+    const errors: Array<{instance: string; error: string; status?: number}> = []
 
     for (const instance of instances) {
       try {
         const url = `${instance}/search?q=${encodeURIComponent(snsQuery)}&format=json&categories=general&language=ja`
         const res = await fetch(url, {
-          headers: { 'Accept': 'application/json', 'User-Agent': 'BookMonitoring/1.0' },
-          signal: AbortSignal.timeout(10000),
+          headers: { 'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0 (compatible; BookMonitoring/1.0)' },
+          signal: AbortSignal.timeout(8000),
         })
-        if (!res.ok) continue
+        if (!res.ok) {
+          errors.push({ instance, error: `HTTP ${res.status}`, status: res.status })
+          continue
+        }
 
         const data = await res.json()
         return NextResponse.json({
@@ -86,12 +98,14 @@ export async function GET(request: NextRequest) {
           items: (data.results || []).slice(0, 5).map((r: { title?: string; url?: string; content?: string }) => ({
             title: r.title, link: r.url, snippet: (r.content || '').slice(0, 150),
           })),
+          triedInstances: errors.length,
         })
-      } catch {
+      } catch (e) {
+        errors.push({ instance, error: String(e) })
         continue
       }
     }
-    return NextResponse.json({ engine: 'searxng', error: 'All instances failed' }, { status: 500 })
+    return NextResponse.json({ engine: 'searxng', error: 'All instances failed', errors, envStatus }, { status: 500 })
   }
 
   // 3. Google CSE
