@@ -75,6 +75,11 @@ const SEARXNG_INSTANCES = [
   'https://searx.be',
   'https://search.sapti.me',
   'https://searx.nixnet.services',
+  'https://searx.work',
+  'https://search.bus-hit.me',
+  'https://searx.zhenyapav.com',
+  'https://search.mdosch.de',
+  'https://searx.juancord.xyz',
 ]
 
 async function searchWithSearXNG(
@@ -88,7 +93,7 @@ async function searchWithSearXNG(
       const res = await fetch(url, {
         headers: {
           'Accept': 'application/json',
-          'User-Agent': 'BookMonitoring/1.0',
+          'User-Agent': 'Mozilla/5.0 (compatible; BookMonitoring/1.0)',
         },
         signal: AbortSignal.timeout(10000),
       })
