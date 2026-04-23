@@ -12,9 +12,19 @@ export async function GET(request: NextRequest) {
   const q = searchParams.get('q') || 'HIKAKIN'
 
   const braveApiKey = process.env.BRAVE_SEARCH_API_KEY
-  const searxngEnabled = process.env.SEARXNG_ENABLED === 'true'
+  const searxngRaw = process.env.SEARXNG_ENABLED
+  const searxngEnabled = searxngRaw === 'true'
   const googleApiKey = process.env.GOOGLE_SEARCH_API_KEY
   const cx = process.env.GOOGLE_SEARCH_CX
+
+  // デバッグ: 環境変数の状態
+  const envStatus = {
+    hasBraveKey: !!braveApiKey,
+    searxngRaw,
+    searxngEnabled,
+    hasGoogleKey: !!googleApiKey,
+    hasCx: !!cx,
+  }
 
   // 1. Brave Search API
   if (braveApiKey) {
@@ -68,6 +78,7 @@ export async function GET(request: NextRequest) {
         const data = await res.json()
         return NextResponse.json({
           engine: 'searxng',
+          envStatus,
           instance,
           query: snsQuery,
           apiStatus: res.status,
@@ -91,6 +102,7 @@ export async function GET(request: NextRequest) {
       const data = await res.json()
       return NextResponse.json({
         engine: 'google',
+        envStatus,
         query: q, cx,
         apiKeyPrefix: googleApiKey.slice(0, 10) + '...',
         apiStatus: res.status,
