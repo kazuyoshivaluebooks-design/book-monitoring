@@ -5,7 +5,8 @@ export const dynamic = 'force-dynamic'
 /**
  * GET /api/debug?q=HIKAKIN
  * 検索APIの生レスポンスを返すデバッグ用エンドポイント
- * Brave → SearXNG → Google CSE の優先順
+ * 優先順: Brave Search API → SearXNG → Google CSE
+ * 環境変数: BRAVE_SEARCH_API_KEY, SEARXNG_ENABLED, GOOGLE_SEARCH_API_KEY, GOOGLE_SEARCH_CX
  */
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url)
