@@ -18,7 +18,7 @@ export const maxDuration = 10 // Vercel Hobby: 10s
 // 除外ジャンルのキーワード
 const EXCLUDED_KEYWORDS = [
   'コミック', '漫画', 'まんが', 'マンガ', 'ライトノベル',
-  '写真集', 'グラビア', '児童書', '絵本', '雑誌', 'ムック',
+  '写真集', 'グラビア', '児童書', '雑誌', 'ムック',
   '学習参考書', '問題集', 'ドリル', 'アダルト', 'BL', 'TL',
   'ボーイズラブ', 'ティーンズラブ', 'ゲーム攻略',
   'ぬりえ', 'パズル', 'クロスワード', '楽譜',
@@ -501,79 +501,35 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // 6. Phase 2: openBDにないISBNは版元ドットコム個別ページから並列取得（残り時間で）
-    const PARALLEL_HANMOTO = 5 // 同時5並列
-    let noOBIdx = 0
-    while (noOBIdx < noOpenBDItems.length) {
-      const elapsed = Date.now() - startTime
-      if (elapsed > 7000) {
-        const remaining = noOpenBDItems.length - noOBIdx
-        results.errors.push(`残り${remaining}件��次回処理`)
-        break
-      }
+    // 6. Phase 2: openBDにないISBNはISBNのみで仮登録（一括・高速）
+    //    タイトル・著者等の詳細は /api/cron/enrich で段階的に補完する
+    if (noOpenBDItems.length > 0) {
+      const phase2Inserts = noOpenBDItems.map(([isbn]) => ({
+        title: `[詳細取得中] ISBN: ${isbn}`,
+        author: '',
+        publisher: null as string | null,
+        isbn,
+        price: null as number | null,
+        release_date: null as string | null,
+        c_code: null as string | null,
+        genre: null as string | null,
+        rank: null as string | null,
+        status: '未対応',
+        sns_data: {},
+        evaluation_reason: '自動検出 - 詳細補完待ち',
+        source: '版元ドットコム(詳細未取得)',
+      }))
 
-      // 残り時間に応じて並列数を調整
-      const timeLeft = 8000 - elapsed
-      const batchCount = timeLeft > 3000 ? PARALLEL_HANMOTO : Math.max(1, Math.floor(timeLeft / 1000))
-      const batch = noOpenBDItems.slice(noOBIdx, noOBIdx + batchCount)
-      noOBIdx += batch.length
-
-      // 並列フェッチ
-      const detailResults = await Promise.allSettled(
-        batch.map(([, item]) => fetchHanmotoBookDetail(item))
-      )
-
-      // 結果を収集してバッチ挿入
-      const phase2Inserts: Array<{
-        title: string; author: string; publisher: string | null;
-        isbn: string | null; price: number | null; release_date: string | null;
-        c_code: null; genre: null; rank: null; status: string;
-        sns_data: Record<string, never>; evaluation_reason: string; source: string;
-      }> = []
-
-      for (let i = 0; i < detailResults.length; i++) {
-        const r = detailResults[i]
-        if (r.status !== 'fulfilled' || !r.value) continue
-        const detail = r.value
-        const isbn = batch[i][0]
-
-        if (existingTitles.has(`${detail.title}|${detail.author}`)) {
-          results.alreadyExists++
-          continue
+      try {
+        const { error } = await supabase.from('books').insert(phase2Inserts)
+        if (error) {
+          results.errors.push(`Phase2バッチ登録エラー: ${error.message}`)
+        } else {
+          results.hanmotoResolved += phase2Inserts.length
+          results.newlyRegistered += phase2Inserts.length
         }
-
-        phase2Inserts.push({
-          title: detail.title,
-          author: detail.author,
-          publisher: detail.publisher || null,
-          isbn: detail.isbn,
-          price: detail.price,
-          release_date: detail.releaseDate,
-          c_code: null,
-          genre: null,
-          rank: null,
-          status: '未対応',
-          sns_data: {},
-          evaluation_reason: '自動検出 - SNS調査待ち',
-          source: '版元ドットコム',
-        })
-        existingTitles.add(`${detail.title}|${detail.author}`)
-        existingIsbns.set(isbn, { id: '', release_date: detail.releaseDate })
-      }
-
-      if (phase2Inserts.length > 0) {
-        try {
-          const { error } = await supabase.from('books').insert(phase2Inserts)
-          if (!error) {
-            results.hanmotoResolved += phase2Inserts.length
-            results.newlyRegistered += phase2Inserts.length
-            for (const row of phase2Inserts) {
-              results.newBooks.push({ title: row.title, author: row.author, publisher: row.publisher || '' })
-            }
-          }
-        } catch {
-          // ignore
-        }
+      } catch (e) {
+        results.errors.push(`Phase2例外: ${e instanceof Error ? e.message : String(e)}`)
       }
     }
 
