@@ -61,48 +61,93 @@ type HanmotoListItem = {
 // POST /bd/list/query.json で日付範囲・offset・rowmax を指定
 // ページングで全件取得（1ページ100件 × 最大10ページ = 最大1000件/区間）
 // ==============================
-async function fetchHanmotoByDateRange(
-  from: string, to: string, offset = 0, rowmax = 100
+async function fetchHanmotoPage(
+  from: string, to: string, offset: number, rowmax: number
 ): Promise<HanmotoListItem[]> {
   const url = 'https://www.hanmoto.com/bd/list/query.json'
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+      'Accept': 'application/json',
+      'Referer': 'https://www.hanmoto.com/bd/kinkan/60days',
+      'Origin': 'https://www.hanmoto.com',
+    },
+    body: JSON.stringify({
+      conds: { salesdate: { from, to } },
+      categoryname: 'kinkan/60days',
+      part: 'kinkan/60days',
+      offset,
+      rowmax,
+    }),
+    signal: AbortSignal.timeout(8000),
+  })
+  if (!res.ok) throw new Error(`query.json returned ${res.status}`)
+
+  const json = await res.json()
+  if (!json.result) throw new Error(`query.json error: ${json.error?.message || 'unknown'}`)
+
+  const list: HanmotoListItem[] = json.data?.list || []
+  return list.filter(item => !!item.isbn && item.isbn.length === 13)
+}
+
+// 2フェーズ並列ページング:
+// Phase A: 全区間のpage1を並列取得
+// Phase B: 100件ちょうど返った区間のpage2を並列取得
+async function fetchAllHanmotoRanges(
+  dateRanges: Array<{ from: string; to: string }>
+): Promise<{ items: HanmotoListItem[]; errors: string[] }> {
+  const ROWMAX = 100
   const allItems: HanmotoListItem[] = []
-  let currentOffset = offset
-  const MAX_PAGES = 10 // 安全弁: 最大1000件
+  const errors: string[] = []
 
-  for (let page = 0; page < MAX_PAGES; page++) {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-        'Accept': 'application/json',
-        'Referer': 'https://www.hanmoto.com/bd/kinkan/60days',
-        'Origin': 'https://www.hanmoto.com',
-      },
-      body: JSON.stringify({
-        conds: { salesdate: { from, to } },
-        categoryname: 'kinkan/60days',
-        part: 'kinkan/60days',
-        offset: currentOffset,
-        rowmax,
-      }),
-      signal: AbortSignal.timeout(10000),
-    })
-    if (!res.ok) throw new Error(`query.json returned ${res.status}`)
+  // Phase A: 全区間のpage1を並列
+  const page1Results = await Promise.allSettled(
+    dateRanges.map(r => fetchHanmotoPage(r.from, r.to, 0, ROWMAX))
+  )
 
-    const json = await res.json()
-    if (!json.result) throw new Error(`query.json error: ${json.error?.message || 'unknown'}`)
-
-    const list: HanmotoListItem[] = json.data?.list || []
-    const validItems = list.filter(item => !!item.isbn && item.isbn.length === 13)
-    allItems.push(...validItems)
-
-    // 取得件数がrowmax未満なら最終ページ
-    if (list.length < rowmax) break
-    currentOffset += rowmax
+  const needsPage2: Array<{ from: string; to: string }> = []
+  for (let i = 0; i < page1Results.length; i++) {
+    const r = page1Results[i]
+    if (r.status === 'fulfilled') {
+      allItems.push(...r.value)
+      if (r.value.length >= ROWMAX) {
+        needsPage2.push(dateRanges[i])
+      }
+    } else {
+      errors.push(`リスト取得エラー (${dateRanges[i].from}~${dateRanges[i].to}): ${r.reason}`)
+    }
   }
 
-  return allItems
+  // Phase B: page2が必要な区間を並列取得
+  if (needsPage2.length > 0) {
+    const page2Results = await Promise.allSettled(
+      needsPage2.map(r => fetchHanmotoPage(r.from, r.to, ROWMAX, ROWMAX))
+    )
+    const needsPage3: Array<{ from: string; to: string }> = []
+    for (let i = 0; i < page2Results.length; i++) {
+      const r = page2Results[i]
+      if (r.status === 'fulfilled') {
+        allItems.push(...r.value)
+        if (r.value.length >= ROWMAX) {
+          needsPage3.push(needsPage2[i])
+        }
+      }
+    }
+
+    // Phase C: page3が必要なら（稀だが安全弁）
+    if (needsPage3.length > 0) {
+      const page3Results = await Promise.allSettled(
+        needsPage3.map(r => fetchHanmotoPage(r.from, r.to, ROWMAX * 2, ROWMAX))
+      )
+      for (const r of page3Results) {
+        if (r.status === 'fulfilled') allItems.push(...r.value)
+      }
+    }
+  }
+
+  return { items: allItems, errors }
 }
 
 // 旧方式のHTMLスクレイピング（フォールバック用）
@@ -332,29 +377,22 @@ export async function GET(request: NextRequest) {
 
     const allItems = new Map<string, HanmotoListItem>() // isbn → item (重複排除)
 
-    // query.json API + 既存書籍リストを並列取得（Supabaseは高速なので先に取る）
-    const fetches = [
-      ...dateRanges.map(r => fetchHanmotoByDateRange(r.from, r.to, 0, 100)),
-      fetchHanmotoList('/bd/shinkan/today'), // 本日発売（フォールバック）
-    ]
-    const [listResults, existingBooksResult] = await Promise.all([
-      Promise.allSettled(fetches),
+    // 版元ドットコム全区間ページング取得 + 本日発売HTML + Supabase既存を並列
+    const [hanmotoResult, todayResult, existingBooksResult] = await Promise.all([
+      fetchAllHanmotoRanges(dateRanges),
+      fetchHanmotoList('/bd/shinkan/today').catch(e => { results.errors.push(`today HTML: ${e}`); return [] as HanmotoListItem[] }),
       supabase.from('books').select('id, isbn, title, author, release_date'),
     ])
 
-    const labels = [
-      ...dateRanges.map(r => `query ${r.from}~${r.to}`),
-      'today HTML',
-    ]
-    for (let i = 0; i < listResults.length; i++) {
-      const r = listResults[i]
-      if (r.status === 'fulfilled') {
-        r.value.forEach(item => {
-          if (!allItems.has(item.isbn)) allItems.set(item.isbn, item)
-        })
-      } else {
-        results.errors.push(`リスト取得エラー (${labels[i]}): ${r.reason}`)
-      }
+    // 版元ドットコム結果をマージ
+    for (const item of hanmotoResult.items) {
+      if (!allItems.has(item.isbn)) allItems.set(item.isbn, item)
+    }
+    results.errors.push(...hanmotoResult.errors)
+
+    // 本日発売をマージ
+    for (const item of todayResult) {
+      if (!allItems.has(item.isbn)) allItems.set(item.isbn, item)
     }
     results.scrapedItems = allItems.size
 
