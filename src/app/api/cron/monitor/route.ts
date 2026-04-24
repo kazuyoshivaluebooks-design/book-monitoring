@@ -59,36 +59,50 @@ type HanmotoListItem = {
 // ==============================
 // Step 1: 版元ドットコムの query.json API で ISBN リストを取得
 // POST /bd/list/query.json で日付範囲・offset・rowmax を指定
+// ページングで全件取得（1ページ100件 × 最大10ページ = 最大1000件/区間）
 // ==============================
 async function fetchHanmotoByDateRange(
   from: string, to: string, offset = 0, rowmax = 100
 ): Promise<HanmotoListItem[]> {
   const url = 'https://www.hanmoto.com/bd/list/query.json'
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-      'Accept': 'application/json',
-      'Referer': 'https://www.hanmoto.com/bd/kinkan/60days',
-      'Origin': 'https://www.hanmoto.com',
-    },
-    body: JSON.stringify({
-      conds: { salesdate: { from, to } },
-      categoryname: 'kinkan/60days',
-      part: 'kinkan/60days',
-      offset,
-      rowmax,
-    }),
-    signal: AbortSignal.timeout(10000),
-  })
-  if (!res.ok) throw new Error(`query.json returned ${res.status}`)
+  const allItems: HanmotoListItem[] = []
+  let currentOffset = offset
+  const MAX_PAGES = 10 // 安全弁: 最大1000件
 
-  const json = await res.json()
-  if (!json.result) throw new Error(`query.json error: ${json.error?.message || 'unknown'}`)
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+        'Accept': 'application/json',
+        'Referer': 'https://www.hanmoto.com/bd/kinkan/60days',
+        'Origin': 'https://www.hanmoto.com',
+      },
+      body: JSON.stringify({
+        conds: { salesdate: { from, to } },
+        categoryname: 'kinkan/60days',
+        part: 'kinkan/60days',
+        offset: currentOffset,
+        rowmax,
+      }),
+      signal: AbortSignal.timeout(10000),
+    })
+    if (!res.ok) throw new Error(`query.json returned ${res.status}`)
 
-  const list: HanmotoListItem[] = json.data?.list || []
-  return list.filter(item => !!item.isbn && item.isbn.length === 13)
+    const json = await res.json()
+    if (!json.result) throw new Error(`query.json error: ${json.error?.message || 'unknown'}`)
+
+    const list: HanmotoListItem[] = json.data?.list || []
+    const validItems = list.filter(item => !!item.isbn && item.isbn.length === 13)
+    allItems.push(...validItems)
+
+    // 取得件数がrowmax未満なら最終ページ
+    if (list.length < rowmax) break
+    currentOffset += rowmax
+  }
+
+  return allItems
 }
 
 // 旧方式のHTMLスクレイピング（フォールバック用）
@@ -305,12 +319,15 @@ export async function GET(request: NextRequest) {
 
   try {
     // 1. 版元ドットコムの query.json API で ISBN リストを収集（90日先まで）
-    // 30日区間×3バッチ + 本日発売を並列取得（各最大100件）
+    // 15日区間×6バッチ + 本日発売を並列取得（ページングで全件取得）
     const today = new Date()
     const dateRanges = [
-      { from: toDateStr(today), to: toDateStr(addDays(today, 30)) },         // 0-30日
-      { from: toDateStr(addDays(today, 31)), to: toDateStr(addDays(today, 60)) },  // 31-60日
-      { from: toDateStr(addDays(today, 61)), to: toDateStr(addDays(today, 90)) },  // 61-90日
+      { from: toDateStr(today), to: toDateStr(addDays(today, 15)) },
+      { from: toDateStr(addDays(today, 16)), to: toDateStr(addDays(today, 30)) },
+      { from: toDateStr(addDays(today, 31)), to: toDateStr(addDays(today, 45)) },
+      { from: toDateStr(addDays(today, 46)), to: toDateStr(addDays(today, 60)) },
+      { from: toDateStr(addDays(today, 61)), to: toDateStr(addDays(today, 75)) },
+      { from: toDateStr(addDays(today, 76)), to: toDateStr(addDays(today, 90)) },
     ]
 
     const allItems = new Map<string, HanmotoListItem>() // isbn → item (重複排除)
