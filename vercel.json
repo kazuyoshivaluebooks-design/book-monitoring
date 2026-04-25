@@ -6,7 +6,7 @@
     },
     {
       "path": "/api/cron/enrich?batch=20",
-      "schedule": "30 */2 * * *"
+      "schedule": "0 22 * * *"
     },
     {
       "path": "/api/sns/check?limit=3",
