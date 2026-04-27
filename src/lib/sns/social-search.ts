@@ -69,17 +69,11 @@ function buildSiteQuery(authorName: string): string {
 
 // ─────── SearXNG (APIキー不要・無料) ───────
 
+// インスタンスを厳選（応答が速いものを上位に、Vercel 10s制限対応）
 const SEARXNG_INSTANCES = [
+  'https://searx.be',
   'https://search.ononoki.org',
   'https://searx.tiekoetter.com',
-  'https://searx.be',
-  'https://search.sapti.me',
-  'https://searx.nixnet.services',
-  'https://searx.work',
-  'https://search.bus-hit.me',
-  'https://searx.zhenyapav.com',
-  'https://search.mdosch.de',
-  'https://searx.juancord.xyz',
 ]
 
 async function searchWithSearXNG(
@@ -95,13 +89,14 @@ async function searchWithSearXNG(
           'Accept': 'application/json',
           'User-Agent': 'Mozilla/5.0 (compatible; BookMonitoring/1.0)',
         },
-        signal: AbortSignal.timeout(10000),
+        signal: AbortSignal.timeout(3000),  // 3秒タイムアウト（Vercel 10s制限対応）
       })
 
       if (!res.ok) continue
 
       const data = await res.json()
       const results = data.results || []
+      if (results.length === 0) continue  // 結果0なら次のインスタンスへ
 
       return results.slice(0, 20).map((r: { title?: string; url?: string; content?: string }) => ({
         title: r.title || '',
@@ -145,25 +140,17 @@ async function searchWithBrave(
           'Accept-Encoding': 'gzip',
           'X-Subscription-Token': apiKey,
         },
-        signal: AbortSignal.timeout(10000),
+        signal: AbortSignal.timeout(4000),  // 4秒タイムアウト
       })
 
       if (res.status === 429) {
-        const waitMs = 2000
-        await new Promise(r => setTimeout(r, waitMs))
-        const retryRes = await fetch(url, {
-          headers: { 'Accept': 'application/json', 'X-Subscription-Token': apiKey },
-          signal: AbortSignal.timeout(10000),
-        })
-        if (retryRes.ok) {
-          const data = await retryRes.json()
-          allItems.push(...(data.web?.results || []).map((r: { title?: string; url?: string; description?: string }) => ({
-            title: r.title || '', link: r.url || '', snippet: r.description || '',
-          })))
-          continue
-        }
-        if (i === 0) throw new QuotaExhaustedError(`Brave Search APIレート制限`)
-        continue
+        // クォータ切れ→即座にフォールバックへ（リトライしない）
+        throw new QuotaExhaustedError('Brave Search APIクォータ超過')
+      }
+
+      if (res.status === 401 || res.status === 403) {
+        // 認証エラー→即座にフォールバックへ
+        return []
       }
 
       if (!res.ok) continue
@@ -241,9 +228,8 @@ export async function searchSocialProfiles(
   if (braveApiKey) {
     try {
       allItems = await searchWithBrave(authorName, braveApiKey)
-    } catch (e) {
-      if (e instanceof QuotaExhaustedError) throw e
-      // Brave失敗時はフォールバック
+    } catch {
+      // Braveクォータ切れ・エラー時はSearXNGにフォールバック（スローしない）
     }
   }
 
