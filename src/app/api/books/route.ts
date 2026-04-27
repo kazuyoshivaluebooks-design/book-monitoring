@@ -91,6 +91,10 @@ export async function GET(request: NextRequest) {
   const sort = searchParams.get('sort') || 'discovered_at'
   const order = searchParams.get('order') || 'desc'
 
+  // rank=ranked → 高確率・注目・中確率のいずれかが付いた書籍のみ
+  const limitParam = searchParams.get('limit')
+  const pageLimit = limitParam ? parseInt(limitParam, 10) : 2000
+
   let query = supabase
     .from('books')
     .select('*')
@@ -101,10 +105,14 @@ export async function GET(request: NextRequest) {
   if (status) {
     query = query.eq('status', status)
   }
-  if (rank) {
+  if (rank === 'ranked') {
+    query = query.in('rank', ['高確率', '注目', '中確率'])
+  } else if (rank) {
     query = query.eq('rank', rank)
   }
-  query = query.order(sort, { ascending: order === 'asc', nullsFirst: false })
+  query = query
+    .order(sort, { ascending: order === 'asc', nullsFirst: false })
+    .limit(pageLimit)
 
   const { data, error } = await query
 

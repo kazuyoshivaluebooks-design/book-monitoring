@@ -17,29 +17,17 @@ const STATUS_COLORS: Record<string, string> = {
 }
 
 const STATUS_OPTIONS = ['未対応', '仕入検討中', '仕入済', '見送り'] as const
-const RANK_OPTIONS = ['高確率', '中確率', '注目'] as const
 
 // ランクの優先度（数値が小さいほど上位）
 const RANK_PRIORITY: Record<string, number> = {
   '高確率': 1,
-  '中確率': 2,
-  '注目': 3,
+  '注目': 2,
+  '中確率': 3,
 }
-const RANK_NONE = 99 // ランクなし
+const RANK_NONE = 99
 
 type SortKey = 'discovered_at' | 'release_date' | 'title' | 'rank'
 type SortDir = 'asc' | 'desc'
-type SortOption = { field: SortKey; order: SortDir; label: string }
-
-const SORT_OPTIONS: SortOption[] = [
-  { field: 'discovered_at', order: 'desc', label: '発見日（新しい順）' },
-  { field: 'discovered_at', order: 'asc',  label: '発見日（古い順）' },
-  { field: 'release_date',  order: 'asc',  label: '発売日（近い順）' },
-  { field: 'release_date',  order: 'desc', label: '発売日（遠い順）' },
-  { field: 'rank',          order: 'asc',  label: 'ランク（高→低）' },
-  { field: 'rank',          order: 'desc', label: 'ランク（低→高）' },
-  { field: 'title',         order: 'asc',  label: 'タイトル（A→Z）' },
-]
 
 function compareByField(a: Book, b: Book, field: SortKey, order: SortDir): number {
   let cmp = 0
@@ -52,7 +40,6 @@ function compareByField(a: Book, b: Book, field: SortKey, order: SortDir): numbe
     const bVal = b[field] || ''
     cmp = aVal < bVal ? -1 : aVal > bVal ? 1 : 0
   } else {
-    // title
     cmp = (a.title || '').localeCompare(b.title || '', 'ja')
   }
   return order === 'desc' ? -cmp : cmp
@@ -89,9 +76,7 @@ function SnsInfo({ snsData }: { snsData: SnsData }) {
     return (obj['url'] as string) || null
   }
 
-  const entries = platforms.filter(p => {
-    return getCount(snsData[p.key], p.field) > 0
-  })
+  const entries = platforms.filter(p => getCount(snsData[p.key], p.field) > 0)
 
   return (
     <div className="flex flex-wrap gap-1.5">
@@ -129,16 +114,12 @@ function BookCover({ isbn }: { isbn: string | null }) {
   const [status, setStatus] = useState<'loading' | 'ok' | 'none'>('loading')
 
   useEffect(() => {
-    if (!isbn) return
+    if (!isbn) { setStatus('none'); return }
     let cancelled = false
     const img = new Image()
     img.onload = () => {
       if (cancelled) return
-      if (img.naturalWidth < 10 || img.naturalHeight < 10) {
-        setStatus('none')
-      } else {
-        setStatus('ok')
-      }
+      setStatus(img.naturalWidth < 10 ? 'none' : 'ok')
     }
     img.onerror = () => { if (!cancelled) setStatus('none') }
     img.src = `https://cover.openbd.jp/${isbn}.jpg`
@@ -231,13 +212,18 @@ function BookCard({
       <SnsInfo snsData={book.sns_data || {}} />
 
       {book.evaluation_reason && (
-        <div className="mt-2 bg-amber-50 rounded p-2 text-xs text-amber-800">
+        <div className="mt-2 bg-amber-50 rounded p-2 text-xs text-amber-800 line-clamp-3">
           <span className="font-bold">判定根拠:</span> {book.evaluation_reason}
         </div>
       )}
 
       {showDetail && (
         <div className="mt-3 pt-3 border-t border-gray-100 space-y-2 text-sm">
+          {book.evaluation_reason && (
+            <div className="bg-amber-50 rounded p-2 text-xs text-amber-800">
+              <span className="font-bold">判定根拠（全文）:</span> {book.evaluation_reason}
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-2 text-gray-600">
             {book.release_date && (
               <div><span className="text-gray-400">発売日:</span> {book.release_date}</div>
@@ -291,24 +277,62 @@ function BookCard({
   )
 }
 
+// ========================================
+// タブ定義
+// ========================================
+type TabKey = 'high' | 'watch' | 'mid' | 'all'
+
+const TABS: { key: TabKey; label: string; rankFilter: string; color: string }[] = [
+  { key: 'high',  label: '高確率',  rankFilter: '高確率',  color: 'red' },
+  { key: 'watch', label: '注目',    rankFilter: '注目',    color: 'blue' },
+  { key: 'mid',   label: '中確率',  rankFilter: '中確率',  color: 'orange' },
+  { key: 'all',   label: '全書籍',  rankFilter: '',        color: 'gray' },
+]
+
 export default function Dashboard() {
   const [books, setBooks] = useState<Book[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [filterStatus, setFilterStatus] = useState('')
-  const [filterRank, setFilterRank] = useState('')
-  const [sort1, setSort1] = useState('release_date:desc')
-  const [sort2, setSort2] = useState('') // 2nd sort（空＝なし）
+  const [activeTab, setActiveTab] = useState<TabKey>('high')
+  const [sort1, setSort1] = useState('release_date:asc')
+
+  // ランク別カウント（全データから算出、初回ロード時に取得）
+  const [rankCounts, setRankCounts] = useState<Record<string, number>>({})
+
+  // 初回にランク別カウントを取得
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch('/api/sns/stats')
+        if (res.ok) {
+          const data = await res.json()
+          setRankCounts(data.rankDistribution || {})
+        }
+      } catch { /* ignore */ }
+    })()
+  }, [])
 
   const fetchBooks = useCallback(async () => {
     setLoading(true)
     const params = new URLSearchParams()
     if (search) params.set('search', search)
     if (filterStatus) params.set('status', filterStatus)
-    if (filterRank) params.set('rank', filterRank)
-    // APIからはdiscovered_at descで全件取得し、クライアントでソート
-    params.set('sort', 'discovered_at')
-    params.set('order', 'desc')
+
+    // タブに応じたランクフィルタ
+    const tab = TABS.find(t => t.key === activeTab)
+    if (tab && tab.rankFilter) {
+      params.set('rank', tab.rankFilter)
+    }
+
+    // ランク付きタブの場合はランク順、全書籍は発見日順
+    if (activeTab === 'all') {
+      params.set('sort', 'discovered_at')
+      params.set('order', 'desc')
+    } else {
+      params.set('sort', 'release_date')
+      params.set('order', 'asc')
+    }
 
     try {
       const res = await fetch(`/api/books?${params}`)
@@ -321,33 +345,23 @@ export default function Dashboard() {
     } finally {
       setLoading(false)
     }
-  }, [search, filterStatus, filterRank])
-
-  // クライアント側で2段階ソート
-  // ランクソートが含まれる場合、ランク付き書籍のみ表示（未ランクを除外）
-  const sortedBooks = (() => {
-    const [f1, o1] = sort1.split(':') as [SortKey, SortDir]
-    const hasSort2 = sort2 !== ''
-    const [f2, o2] = hasSort2 ? (sort2.split(':') as [SortKey, SortDir]) : ['discovered_at' as SortKey, 'desc' as SortDir]
-
-    const usesRankSort = f1 === 'rank' || (hasSort2 && f2 === 'rank')
-
-    // ランクソート時はランク付きの書籍のみに絞り込む
-    const filtered = usesRankSort
-      ? books.filter(b => b.rank && RANK_PRIORITY[b.rank] !== undefined)
-      : books
-
-    return [...filtered].sort((a, b) => {
-      const cmp1 = compareByField(a, b, f1, o1)
-      if (cmp1 !== 0) return cmp1
-      if (hasSort2) return compareByField(a, b, f2, o2)
-      return 0
-    })
-  })()
+  }, [search, filterStatus, activeTab])
 
   useEffect(() => {
     fetchBooks()
   }, [fetchBooks])
+
+  // クライアント側ソート
+  const sortedBooks = (() => {
+    const [f1, o1] = sort1.split(':') as [SortKey, SortDir]
+    return [...books].sort((a, b) => {
+      // まずランク優先度で
+      const rankCmp = (RANK_PRIORITY[a.rank || ''] ?? RANK_NONE) - (RANK_PRIORITY[b.rank || ''] ?? RANK_NONE)
+      if (rankCmp !== 0 && activeTab === 'all') return rankCmp
+      // 次に指定ソート
+      return compareByField(a, b, f1, o1)
+    })
+  })()
 
   const handleStatusChange = async (id: string, status: string) => {
     try {
@@ -391,43 +405,34 @@ export default function Dashboard() {
       while (!controller.signal.aborted) {
         let data: { processed?: number; remaining?: number; results?: Array<{ error?: string }>; quotaExhausted?: boolean; quotaError?: string; error?: string } | null = null
 
-        // フェッチ + リトライロジック
         for (let retry = 0; retry <= MAX_RETRIES; retry++) {
           try {
             const res = await fetch('/api/sns/check?limit=1', {
               signal: controller.signal,
             })
 
-            // クォータ切れ (429)
             if (res.status === 429) {
-              const errData = await res.json().catch(() => ({}))
               setSnsProgress(prev => ({
                 ...prev,
-                message: `⚠️ Google APIクォータ超過 — 本日の残り調査は明日再開されます（${totalProcessed}冊完了）`,
+                message: `⚠️ APIクォータ超過 — ${totalProcessed}冊完了、残りは明日再開されます`,
               }))
-              // クォータ切れは復旧不可なので終了
               return
             }
 
-            // その他のHTTPエラー
             if (!res.ok) {
-              const text = await res.text().catch(() => `HTTP ${res.status}`)
-              console.warn(`[SNS batch] HTTP ${res.status}:`, text)
               if (retry < MAX_RETRIES) {
                 await new Promise(r => setTimeout(r, 3000 * (retry + 1)))
                 continue
               }
-              // リトライ上限 — この回はスキップして次バッチへ
               consecutiveErrors++
               break
             }
 
             data = await res.json()
-            consecutiveErrors = 0  // 成功したのでリセット
+            consecutiveErrors = 0
             break
           } catch (e) {
             if (controller.signal.aborted) return
-            console.warn(`[SNS batch] fetch error (retry ${retry}):`, e)
             if (retry < MAX_RETRIES) {
               await new Promise(r => setTimeout(r, 3000 * (retry + 1)))
               continue
@@ -436,29 +441,26 @@ export default function Dashboard() {
           }
         }
 
-        // 5回連続エラーなら停止
         if (consecutiveErrors >= 5) {
           setSnsProgress(prev => ({
             ...prev,
-            message: `❌ 連続エラーにより停止（${totalProcessed}冊完了）。しばらく待ってから再開してください。`,
+            message: `❌ 連続エラーにより停止（${totalProcessed}冊完了）`,
           }))
           return
         }
 
         if (!data) {
-          // データ取得失敗だが連続エラー上限未満 → 少し待って続行
           await new Promise(r => setTimeout(r, 5000))
           continue
         }
 
-        // クォータ切れレスポンス（ステータス200だがフラグ付き）
         if (data.quotaExhausted) {
           totalProcessed += data.processed || 0
           setSnsProgress({
             processed: totalProcessed,
             remaining: data.remaining || 0,
             errors,
-            message: `⚠️ Google APIクォータ超過 — ${totalProcessed}冊完了、残りは明日再開されます`,
+            message: `⚠️ APIクォータ超過 — ${totalProcessed}冊完了`,
           })
           return
         }
@@ -474,28 +476,21 @@ export default function Dashboard() {
           message: '',
         })
 
-        // 完了判定
         if (data.remaining === 0 || data.processed === 0) break
 
-        // 定期的にブックリストを更新（50冊ごと）
         if (totalProcessed > 0 && totalProcessed % 50 < 3) {
           fetchBooks()
         }
 
-        // 少し待ってから次のバッチ（API負荷軽減）
         await new Promise(r => setTimeout(r, 3000))
       }
     } catch (e) {
       if (!(e instanceof DOMException && (e as DOMException).name === 'AbortError')) {
         console.error('[SNS batch] unexpected error:', e)
-        setSnsProgress(prev => ({
-          ...prev,
-          message: `❌ エラー: ${e instanceof Error ? e.message : String(e)}`,
-        }))
       }
     } finally {
       setSnsRunning(false)
-      fetchBooks()  // 完了後にリストを更新
+      fetchBooks()
     }
   }, [snsRunning, fetchBooks, snsAbort])
 
@@ -503,92 +498,97 @@ export default function Dashboard() {
     snsAbort[0]?.abort()
   }, [snsAbort])
 
-  // ページロード時に未調査書籍があれば自動的にSNS調査を開始
+  // ページロード時に未調査書籍があれば自動開始
   const [autoStartChecked, setAutoStartChecked] = useState(false)
   useEffect(() => {
     if (autoStartChecked || loading || snsRunning) return
     setAutoStartChecked(true)
-
-    // 未調査数をAPIで確認してから自動開始
     const checkAndStart = async () => {
       try {
         const res = await fetch('/api/sns/check?limit=0')
         if (!res.ok) return
         const data = await res.json()
         if (data.remaining && data.remaining > 0) {
-          // 少し遅延を入れてUIが安定してから開始
           setTimeout(() => startSnsBatch(), 1500)
         }
-      } catch {
-        // 自動開始失敗は無視（手動ボタンで対応可能）
-      }
+      } catch { /* ignore */ }
     }
     checkAndStart()
   }, [autoStartChecked, loading, snsRunning, startSnsBatch])
 
-  const stats = {
-    total: books.length,
-    highProb: books.filter(b => b.rank === '高確率').length,
-    midProb: books.filter(b => b.rank === '中確率').length,
-    pending: books.filter(b => b.status === '未対応').length,
-    ordered: books.filter(b => b.status === '仕入済').length,
-    noSns: books.filter(b => {
-      // evaluation_reason が null かつ著者名ありの書籍が未調査
-      return !b.evaluation_reason && b.author && b.author.trim() !== ''
-    }).length,
-  }
+  const currentTabCount = books.length
+  const totalRanked = (rankCounts['高確率'] || 0) + (rankCounts['注目'] || 0) + (rankCounts['中確率'] || 0)
 
   return (
     <div className="min-h-screen bg-gray-50">
+      {/* ヘッダー */}
       <header className="bg-white border-b sticky top-0 z-10">
         <div className="max-w-6xl mx-auto px-4 py-3">
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-lg font-bold text-gray-900">新刊モニタリング</h1>
-              <p className="text-xs text-gray-500">著者SNS影響力による予約100冊見込み書籍</p>
+              <p className="text-xs text-gray-500">著者SNS影響力による販売見込み判定 — ランク付き {totalRanked}件</p>
             </div>
-            <div className="flex items-center gap-4 text-xs text-gray-500">
-              <span>全{stats.total}件</span>
-              <span className="text-red-600">高確率 {stats.highProb}</span>
-              <span className="text-orange-600">中確率 {stats.midProb}</span>
-              <span>未対応 {stats.pending}</span>
-              <span className="text-green-600">仕入済 {stats.ordered}</span>
-              {stats.noSns > 0 && !snsRunning && (
-                <button
-                  onClick={startSnsBatch}
-                  className="ml-2 px-3 py-1 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors text-xs font-medium"
-                >
-                  SNS調査開始（残{stats.noSns}冊）
-                </button>
-              )}
+            <div className="flex items-center gap-3 text-xs">
               {snsRunning && (
-                <div className="flex items-center gap-2 ml-2 flex-wrap">
+                <div className="flex items-center gap-2">
                   <div className="animate-spin w-3 h-3 border-2 border-indigo-500 border-t-transparent rounded-full" />
                   <span className="text-indigo-600 font-medium">
-                    調査中... {snsProgress.processed}冊完了 / 残{snsProgress.remaining}冊
-                    {snsProgress.errors > 0 && <span className="text-orange-500 ml-1">({snsProgress.errors}件エラー)</span>}
+                    調査中 {snsProgress.processed}冊 / 残{snsProgress.remaining}
                   </span>
-                  {snsProgress.message && (
-                    <span className="text-xs text-orange-600 block w-full mt-0.5">{snsProgress.message}</span>
-                  )}
-                  <button
-                    onClick={stopSnsBatch}
-                    className="px-2 py-0.5 bg-gray-200 text-gray-600 rounded hover:bg-gray-300 text-xs"
-                  >
+                  <button onClick={stopSnsBatch} className="px-2 py-0.5 bg-gray-200 text-gray-600 rounded hover:bg-gray-300">
                     停止
                   </button>
                 </div>
               )}
               {!snsRunning && snsProgress.message && (
-                <span className="text-xs text-orange-600 ml-2">{snsProgress.message}</span>
+                <span className="text-orange-600">{snsProgress.message}</span>
               )}
             </div>
           </div>
         </div>
       </header>
 
+      {/* タブ */}
       <div className="bg-white border-b">
-        <div className="max-w-6xl mx-auto px-4 py-3">
+        <div className="max-w-6xl mx-auto px-4">
+          <div className="flex gap-0">
+            {TABS.map(tab => {
+              const count = tab.key === 'all'
+                ? Object.values(rankCounts).reduce((a, b) => a + b, 0)
+                : (rankCounts[tab.rankFilter] || 0)
+              const isActive = activeTab === tab.key
+              return (
+                <button
+                  key={tab.key}
+                  onClick={() => setActiveTab(tab.key)}
+                  className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+                    isActive
+                      ? `border-${tab.color}-500 text-${tab.color}-700 bg-${tab.color}-50`
+                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+                  }`}
+                  style={isActive ? {
+                    borderBottomColor: tab.color === 'red' ? '#ef4444' : tab.color === 'blue' ? '#3b82f6' : tab.color === 'orange' ? '#f97316' : '#6b7280',
+                    backgroundColor: tab.color === 'red' ? '#fef2f2' : tab.color === 'blue' ? '#eff6ff' : tab.color === 'orange' ? '#fff7ed' : '#f9fafb',
+                    color: tab.color === 'red' ? '#b91c1c' : tab.color === 'blue' ? '#1d4ed8' : tab.color === 'orange' ? '#c2410c' : '#374151',
+                  } : {}}
+                >
+                  {tab.label}
+                  <span className={`ml-1.5 px-1.5 py-0.5 rounded-full text-xs ${
+                    isActive ? 'bg-white/60' : 'bg-gray-100'
+                  }`}>
+                    {count}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* フィルタ・ソート */}
+      <div className="bg-white border-b">
+        <div className="max-w-6xl mx-auto px-4 py-2">
           <div className="flex flex-wrap items-center gap-3">
             <input
               type="text"
@@ -608,51 +608,32 @@ export default function Dashboard() {
               ))}
             </select>
             <select
-              value={filterRank}
-              onChange={(e) => setFilterRank(e.target.value)}
-              className="px-3 py-1.5 text-sm border rounded-md bg-white"
-            >
-              <option value="">全ランク</option>
-              {RANK_OPTIONS.map(r => (
-                <option key={r} value={r}>{r}</option>
-              ))}
-            </select>
-            <select
               value={sort1}
               onChange={(e) => setSort1(e.target.value)}
               className="px-3 py-1.5 text-sm border rounded-md bg-white"
             >
-              {SORT_OPTIONS.map(opt => (
-                <option key={`${opt.field}:${opt.order}`} value={`${opt.field}:${opt.order}`}>
-                  {opt.label}
-                </option>
-              ))}
+              <option value="release_date:asc">発売日（近い順）</option>
+              <option value="release_date:desc">発売日（遠い順）</option>
+              <option value="discovered_at:desc">発見日（新しい順）</option>
+              <option value="discovered_at:asc">発見日（古い順）</option>
+              <option value="title:asc">タイトル（A→Z）</option>
             </select>
-            <select
-              value={sort2}
-              onChange={(e) => setSort2(e.target.value)}
-              className="px-3 py-1.5 text-sm border rounded-md bg-white text-gray-500"
-            >
-              <option value="">次に...</option>
-              {SORT_OPTIONS
-                .filter(opt => `${opt.field}:${opt.order}` !== sort1)
-                .map(opt => (
-                  <option key={`${opt.field}:${opt.order}`} value={`${opt.field}:${opt.order}`}>
-                    → {opt.label}
-                  </option>
-                ))}
-            </select>
+            <span className="text-xs text-gray-400">{currentTabCount}件表示</span>
           </div>
         </div>
       </div>
 
+      {/* 書籍一覧 */}
       <main className="max-w-6xl mx-auto px-4 py-6">
         {loading ? (
           <div className="text-center py-12 text-gray-400">読み込み中...</div>
         ) : books.length === 0 ? (
           <div className="text-center py-12">
-            <p className="text-gray-400 text-lg mb-2">書籍が見つかりません</p>
-            <p className="text-gray-300 text-sm">フィルタ条件を変更するか、モニタリングタスクの実行をお待ちください</p>
+            <p className="text-gray-400 text-lg mb-2">該当する書籍がありません</p>
+            <p className="text-gray-300 text-sm">
+              {activeTab !== 'all' ? '別のタブを確認するか、' : ''}
+              フィルタ条件を変更してください
+            </p>
           </div>
         ) : (
           <div className="grid gap-4 md:grid-cols-2">
