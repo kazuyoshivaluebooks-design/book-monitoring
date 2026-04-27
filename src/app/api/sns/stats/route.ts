@@ -8,12 +8,12 @@ export const dynamic = 'force-dynamic'
 export async function GET(request: NextRequest) {
   const q = request.nextUrl.searchParams.get('q')
 
-  // クエリパラメータがあれば著者名検索モード
+  // クエリパラメータがあれば著者名+タイトル検索モード
   if (q) {
     const { data: books } = await supabase
       .from('books')
       .select('title, author, rank, evaluation_reason, sns_data, release_date')
-      .ilike('author', `%${q}%`)
+      .or(`author.ilike.%${q}%,title.ilike.%${q}%`)
       .limit(20)
 
     return NextResponse.json({
