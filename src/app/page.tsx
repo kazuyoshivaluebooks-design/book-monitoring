@@ -500,6 +500,8 @@ export default function Dashboard() {
 
   // ページロード時に未調査書籍があれば自動開始
   const [autoStartChecked, setAutoStartChecked] = useState(false)
+  const [resetCandidates, setResetCandidates] = useState(0)
+
   useEffect(() => {
     if (autoStartChecked || loading || snsRunning) return
     setAutoStartChecked(true)
@@ -512,9 +514,33 @@ export default function Dashboard() {
           setTimeout(() => startSnsBatch(), 1500)
         }
       } catch { /* ignore */ }
+
+      // 結果0件の候補数も取得
+      try {
+        const res2 = await fetch('/api/sns/reset-empty')
+        if (res2.ok) {
+          const data2 = await res2.json()
+          setResetCandidates(data2.resetCandidates || 0)
+        }
+      } catch { /* ignore */ }
     }
     checkAndStart()
   }, [autoStartChecked, loading, snsRunning, startSnsBatch])
+
+  const handleResetAndRecheck = async () => {
+    if (snsRunning) return
+    if (!confirm(`検索結果0件の${resetCandidates}件をリセットして再調査しますか？`)) return
+    try {
+      const res = await fetch('/api/sns/reset-empty', { method: 'POST' })
+      const data = await res.json()
+      alert(`${data.reset}件をリセットしました。自動調査を開始します。`)
+      setResetCandidates(0)
+      fetchBooks()
+      setTimeout(() => startSnsBatch(), 1000)
+    } catch (e) {
+      alert('リセットに失敗しました: ' + String(e))
+    }
+  }
 
   const currentTabCount = books.length
   const totalRanked = (rankCounts['高確率'] || 0) + (rankCounts['注目'] || 0) + (rankCounts['中確率'] || 0)
@@ -543,6 +569,14 @@ export default function Dashboard() {
               )}
               {!snsRunning && snsProgress.message && (
                 <span className="text-orange-600">{snsProgress.message}</span>
+              )}
+              {!snsRunning && resetCandidates > 0 && (
+                <button
+                  onClick={handleResetAndRecheck}
+                  className="px-3 py-1 bg-amber-500 text-white rounded-md hover:bg-amber-600 transition-colors text-xs font-medium"
+                >
+                  結果0件を再調査（{resetCandidates}件）
+                </button>
               )}
             </div>
           </div>

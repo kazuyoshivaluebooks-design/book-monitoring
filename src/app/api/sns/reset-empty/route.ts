@@ -3,6 +3,22 @@ import { supabase } from '@/lib/supabase'
 
 export const dynamic = 'force-dynamic'
 
+// GET /api/sns/reset-empty — リセット対象の件数を確認（実行はしない）
+export async function GET() {
+  const { count, error } = await supabase
+    .from('books')
+    .select('id', { count: 'exact', head: true })
+    .or('evaluation_reason.ilike.%結果0件%,evaluation_reason.ilike.%結果 0件%')
+    .not('author', 'is', null)
+    .not('author', 'eq', '')
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 })
+  }
+
+  return NextResponse.json({ resetCandidates: count || 0 })
+}
+
 // POST /api/sns/reset-empty
 // 検索結果0件だった書籍のevaluation_reasonをnullにリセットし、再調査対象にする
 export async function POST(request: NextRequest) {

@@ -69,19 +69,33 @@ function buildSiteQuery(authorName: string): string {
 
 // ─────── SearXNG (APIキー不要・無料) ───────
 
-// インスタンスを厳選（応答が速いものを上位に、Vercel 10s制限対応）
+// インスタンスを多めに用意（レート制限回避のためランダムローテーション）
 const SEARXNG_INSTANCES = [
   'https://searx.be',
   'https://search.ononoki.org',
   'https://searx.tiekoetter.com',
+  'https://search.sapti.me',
+  'https://searxng.site',
+  'https://searx.work',
+  'https://search.bus-hit.me',
+  'https://northboot.xyz',
+  'https://opnxng.com',
+  'https://searx.ox2.fr',
 ]
+
+// ランダムに並び替えて3つ選ぶ（毎回異なるインスタンスを使用）
+function pickInstances(count: number): string[] {
+  const shuffled = [...SEARXNG_INSTANCES].sort(() => Math.random() - 0.5)
+  return shuffled.slice(0, count)
+}
 
 async function searchWithSearXNG(
   authorName: string
 ): Promise<Array<{ title: string; link: string; snippet: string }>> {
   const query = buildSiteQuery(authorName)
 
-  for (const instance of SEARXNG_INSTANCES) {
+  const instances = pickInstances(4)  // ランダムに4つ選ぶ
+  for (const instance of instances) {
     try {
       const url = `${instance}/search?q=${encodeURIComponent(query)}&format=json&categories=general&language=ja`
       const res = await fetch(url, {
