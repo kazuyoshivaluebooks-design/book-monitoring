@@ -1,11 +1,34 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 
 export const dynamic = 'force-dynamic'
 
-// GET /api/sns/stats
-// SNS調査結果の統計・品質チェック
-export async function GET() {
+// GET /api/sns/stats?q=ポインティ  — 著者名で検索
+// GET /api/sns/stats                — 全体統計
+export async function GET(request: NextRequest) {
+  const q = request.nextUrl.searchParams.get('q')
+
+  // クエリパラメータがあれば著者名検索モード
+  if (q) {
+    const { data: books } = await supabase
+      .from('books')
+      .select('title, author, rank, evaluation_reason, sns_data, release_date')
+      .ilike('author', `%${q}%`)
+      .limit(20)
+
+    return NextResponse.json({
+      query: q,
+      count: books?.length || 0,
+      books: (books || []).map(b => ({
+        title: b.title,
+        author: b.author,
+        rank: b.rank,
+        releaseDate: b.release_date,
+        reason: (b.evaluation_reason || '').slice(0, 200),
+        snsData: b.sns_data,
+      })),
+    })
+  }
   // 1. ランク別の分布
   const { data: rankDist } = await supabase
     .from('books')
