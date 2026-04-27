@@ -235,11 +235,12 @@ export async function searchSocialProfiles(
   let allItems: Array<{ title: string; link: string; snippet: string }> = []
 
   const braveApiKey = process.env.BRAVE_SEARCH_API_KEY
-  const searxngEnabled = process.env.SEARXNG_ENABLED === 'true'
+  const searxngDisabled = process.env.SEARXNG_DISABLED === 'true'
 
   if (braveApiKey) {
     allItems = await searchWithBrave(authorName, braveApiKey)
-  } else if (searxngEnabled) {
+  } else if (!searxngDisabled) {
+    // SearXNG はデフォルトで有効（無料・無制限）
     allItems = await searchWithSearXNG(authorName)
   } else if (apiKey && cx) {
     allItems = await searchWithGoogle(authorName, apiKey, cx)

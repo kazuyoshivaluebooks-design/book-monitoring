@@ -17,6 +17,22 @@ export const maxDuration = 10  // Vercel Hobby plan: max 10s
  * SNS未調査の書籍を自動取得して一括処理
  */
 
+/**
+ * 著者名がSNS調査に不適切かどうかを判定（機関名・委員会等をスキップ）
+ * SNS検索APIの呼び出しを節約するためのプレフィルタ
+ */
+const SKIP_AUTHOR_PATTERNS = [
+  /委員会$/, /研究会$/, /研究所$/, /協会$/, /学会$/,
+  /事務局$/, /編集部$/, /制作委員会$/, /プロジェクト$/,
+  /省$/, /庁$/, /局$/, /課$/, /部会$/,
+  /株式会社/, /有限会社/, /合同会社/, /一般社団法人/, /一般財団法人/,
+  /^編集/, /制作$/, /事務所$/,
+]
+
+function shouldSkipAuthor(authorName: string): boolean {
+  return SKIP_AUTHOR_PATTERNS.some(p => p.test(authorName))
+}
+
 async function checkSingleBook(bookId: string): Promise<{
   bookId: string
   title: string
@@ -63,6 +79,21 @@ async function checkSingleBook(bookId: string): Promise<{
       author: rawAuthor,
       rank: null,
       evaluationReason: 'SNS調査スキップ: 著者名が空',
+    }
+  }
+
+  // 機関名・委員会等はSNS調査をスキップ（API節約）
+  if (shouldSkipAuthor(authorName)) {
+    await supabase.from('books').update({
+      evaluation_reason: `SNS調査スキップ: 機関名（${authorName}）`,
+    }).eq('id', bookId)
+
+    return {
+      bookId,
+      title: book.title,
+      author: rawAuthor,
+      rank: null,
+      evaluationReason: `SNS調査スキップ: 機関名（${authorName}）`,
     }
   }
 
@@ -197,10 +228,13 @@ async function getPendingCount(): Promise<number> {
 }
 
 
-// GET: 未調査の書籍を処理（cron または手動呼び出し）
+// GET: 未調査の書籍を処理（cron / 外部cron / ダッシュボード自動呼び出し）
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url)
   const limit = parseInt(searchParams.get('limit') || '3', 10)
+
+  // ※ このエンドポイントはダッシュボードから直接呼ばれるため認証なし
+  // 外部cronサービスからは /api/cron/sns-batch 経由で呼び出す（認証付き）
 
   try {
     // SNS未調査の書籍を取得

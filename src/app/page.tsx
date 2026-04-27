@@ -503,6 +503,29 @@ export default function Dashboard() {
     snsAbort[0]?.abort()
   }, [snsAbort])
 
+  // ページロード時に未調査書籍があれば自動的にSNS調査を開始
+  const [autoStartChecked, setAutoStartChecked] = useState(false)
+  useEffect(() => {
+    if (autoStartChecked || loading || snsRunning) return
+    setAutoStartChecked(true)
+
+    // 未調査数をAPIで確認してから自動開始
+    const checkAndStart = async () => {
+      try {
+        const res = await fetch('/api/sns/check?limit=0')
+        if (!res.ok) return
+        const data = await res.json()
+        if (data.remaining && data.remaining > 0) {
+          // 少し遅延を入れてUIが安定してから開始
+          setTimeout(() => startSnsBatch(), 1500)
+        }
+      } catch {
+        // 自動開始失敗は無視（手動ボタンで対応可能）
+      }
+    }
+    checkAndStart()
+  }, [autoStartChecked, loading, snsRunning, startSnsBatch])
+
   const stats = {
     total: books.length,
     highProb: books.filter(b => b.rank === '高確率').length,
