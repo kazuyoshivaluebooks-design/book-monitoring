@@ -178,7 +178,7 @@ export async function GET(request: NextRequest) {
           release_date: detail.releaseDate,
           price: detail.price,
           source: '版元ドットコム',
-          evaluation_reason: '自動検出 - SNS調査待ち',
+          evaluation_reason: null,
         })
         .eq('id', book.id)
 
