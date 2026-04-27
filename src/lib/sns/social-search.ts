@@ -237,15 +237,24 @@ export async function searchSocialProfiles(
   const braveApiKey = process.env.BRAVE_SEARCH_API_KEY
   const searxngDisabled = process.env.SEARXNG_DISABLED === 'true'
 
+  // 優先順に試行し、結果が空ならフォールバック
   if (braveApiKey) {
-    allItems = await searchWithBrave(authorName, braveApiKey)
-  } else if (!searxngDisabled) {
-    // SearXNG はデフォルトで有効（無料・無制限）
+    try {
+      allItems = await searchWithBrave(authorName, braveApiKey)
+    } catch (e) {
+      if (e instanceof QuotaExhaustedError) throw e
+      // Brave失敗時はフォールバック
+    }
+  }
+
+  // Braveが空結果 or 未設定 → SearXNG（無料・無制限）
+  if (allItems.length === 0 && !searxngDisabled) {
     allItems = await searchWithSearXNG(authorName)
-  } else if (apiKey && cx) {
+  }
+
+  // SearXNGも空 → Google CSE
+  if (allItems.length === 0 && apiKey && cx) {
     allItems = await searchWithGoogle(authorName, apiKey, cx)
-  } else {
-    return { profiles: [], rawResults: [] }
   }
 
   // 検索結果からプラットフォーム別プロフィールを抽出

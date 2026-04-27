@@ -145,7 +145,7 @@ async function checkSingleBook(bookId: string): Promise<{
     const debugInfo = rawResults.slice(0, 3).map(r => `[${r.title}](${r.url})`).join('; ')
     rankResult.evaluationReason += ` [検索ヒット${rawResults.length}件: ${debugInfo.slice(0, 200)}]`
   } else {
-    rankResult.evaluationReason += ' [Google検索: 結果0件]'
+    rankResult.evaluationReason += ' [検索: 結果0件]'
   }
 
   // 4. Supabase を更新
