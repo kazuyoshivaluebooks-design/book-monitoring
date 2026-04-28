@@ -76,16 +76,19 @@ function SnsInfo({ snsData }: { snsData: SnsData }) {
     return (obj['url'] as string) || null
   }
 
-  const entries = platforms.filter(p => getCount(snsData[p.key], p.field) > 0)
+  const entries = platforms.filter(p => getCount(snsData[p.key], p.field) > 0 || getUrl(snsData[p.key]) !== null)
 
   return (
     <div className="flex flex-wrap gap-1.5">
       {entries.map(p => {
         const count = getCount(snsData[p.key], p.field)
         const url = getUrl(snsData[p.key])
+        const hasFollowers = count > 0
         const badge = (
-          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-indigo-50 text-indigo-700 ${url ? 'hover:bg-indigo-100 cursor-pointer' : ''}`}>
-            {p.label}: {formatFollowers(count)}
+          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs ${
+            hasFollowers ? 'bg-indigo-50 text-indigo-700' : 'bg-gray-50 text-gray-500'
+          } ${url ? 'hover:bg-indigo-100 cursor-pointer' : ''}`}>
+            {p.label}{hasFollowers ? `: ${formatFollowers(count)}` : ''}
             {url && <span className="text-indigo-400">↗</span>}
           </span>
         )
@@ -191,12 +194,27 @@ function BookCard({
       <div className="flex gap-3">
         <BookCover isbn={book.isbn} />
         <div className="flex-1 min-w-0">
-          <h3
-            className="font-bold text-base mb-1 cursor-pointer hover:text-indigo-600"
-            onClick={() => setShowDetail(!showDetail)}
-          >
-            {book.title}
-          </h3>
+          <div className="flex items-start gap-1 mb-1">
+            {book.isbn ? (
+              <a
+                href={`https://www.hanmoto.com/bd/isbn/${book.isbn}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-bold text-base hover:text-indigo-600 hover:underline"
+              >
+                {book.title}
+              </a>
+            ) : (
+              <span className="font-bold text-base">{book.title}</span>
+            )}
+            <button
+              onClick={() => setShowDetail(!showDetail)}
+              className="flex-shrink-0 mt-0.5 text-gray-400 hover:text-indigo-500 text-xs"
+              title="詳細を表示"
+            >
+              {showDetail ? '▲' : '▼'}
+            </button>
+          </div>
           <p className="text-sm text-gray-600 mb-1">
             {book.author}
             {book.publisher && <span className="text-gray-400"> / {book.publisher}</span>}
@@ -296,6 +314,7 @@ export default function Dashboard() {
   const [filterStatus, setFilterStatus] = useState('')
   const [activeTab, setActiveTab] = useState<TabKey>('high')
   const [sort1, setSort1] = useState('release_date:asc')
+  const [sort2, setSort2] = useState('rank:asc')
 
   // ランク別カウント（全データから算出、初回ロード時に取得）
   const [rankCounts, setRankCounts] = useState<Record<string, number>>({})
@@ -351,15 +370,14 @@ export default function Dashboard() {
     fetchBooks()
   }, [fetchBooks])
 
-  // クライアント側ソート
+  // クライアント側ソート（2段階）
   const sortedBooks = (() => {
     const [f1, o1] = sort1.split(':') as [SortKey, SortDir]
+    const [f2, o2] = sort2.split(':') as [SortKey, SortDir]
     return [...books].sort((a, b) => {
-      // まずランク優先度で
-      const rankCmp = (RANK_PRIORITY[a.rank || ''] ?? RANK_NONE) - (RANK_PRIORITY[b.rank || ''] ?? RANK_NONE)
-      if (rankCmp !== 0 && activeTab === 'all') return rankCmp
-      // 次に指定ソート
-      return compareByField(a, b, f1, o1)
+      const cmp1 = compareByField(a, b, f1, o1)
+      if (cmp1 !== 0) return cmp1
+      return compareByField(a, b, f2, o2)
     })
   })()
 
@@ -648,8 +666,21 @@ export default function Dashboard() {
             >
               <option value="release_date:asc">発売日（近い順）</option>
               <option value="release_date:desc">発売日（遠い順）</option>
+              <option value="rank:asc">ランク（高→低）</option>
               <option value="discovered_at:desc">発見日（新しい順）</option>
               <option value="discovered_at:asc">発見日（古い順）</option>
+              <option value="title:asc">タイトル（A→Z）</option>
+            </select>
+            <span className="text-xs text-gray-400">→</span>
+            <select
+              value={sort2}
+              onChange={(e) => setSort2(e.target.value)}
+              className="px-3 py-1.5 text-sm border rounded-md bg-white"
+            >
+              <option value="rank:asc">ランク（高→低）</option>
+              <option value="release_date:asc">発売日（近い順）</option>
+              <option value="release_date:desc">発売日（遠い順）</option>
+              <option value="discovered_at:desc">発見日（新しい順）</option>
               <option value="title:asc">タイトル（A→Z）</option>
             </select>
             <span className="text-xs text-gray-400">{currentTabCount}件表示</span>
