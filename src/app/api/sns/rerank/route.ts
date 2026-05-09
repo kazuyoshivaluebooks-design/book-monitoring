@@ -8,7 +8,21 @@ import type { SocialProfile, SearchResultRaw } from '@/lib/sns/social-search'
 export const dynamic = 'force-dynamic'
 export const maxDuration = 10  // Vercel Hobby plan: max 10s
 
+/**
+ * GET /api/sns/rerank
+ *
+ * ルールベース判定された書籍をClaude AIで再ランク判定する。
+ * 既存のSNSデータを使い、Claude APIのみ呼び直す。
+ *
+ * Query params:
+ *   - limit: 一度に処理する件数 (default: 2, max: 5)
+ *   - token: CRON_SECRET認証トークン
+ *
+ * cron-job.org から5分おきに呼び出す想定:
+ *   URL: https://your-app.vercel.app/api/sns/rerank?token=YOUR_CRON_SECRET
+ */
 export async function GET(request: NextRequest) {
+  // 認証チェック
   const cronSecret = process.env.CRON_SECRET
   if (cronSecret) {
     const token = request.nextUrl.searchParams.get('token')
@@ -21,7 +35,7 @@ export async function GET(request: NextRequest) {
   const anthropicApiKey = process.env.ANTHROPIC_API_KEY
   if (!anthropicApiKey) {
     return NextResponse.json(
-      { error: 'ANTHROPIC_API_KEY ãè¨­å®ããã¦ãã¾ãã' },
+      { error: 'ANTHROPIC_API_KEY が設定されていません' },
       { status: 500 }
     )
   }
@@ -33,24 +47,26 @@ export async function GET(request: NextRequest) {
   const startTime = Date.now()
 
   try {
+    // ルールベース判定された書籍を取得
     const { data: books, error: fetchError } = await supabase
       .from('books')
       .select('id, title, author, publisher, isbn, price, release_date, sns_data, evaluation_reason')
-      .like('evaluation_reason', '%ã«ã¼ã«ãã¼ã¹å¤å®%')
+      .like('evaluation_reason', '%ルールベース判定%')
       .order('release_date', { ascending: true, nullsFirst: false })
       .limit(limit)
 
     if (fetchError) {
       return NextResponse.json(
-        { error: `DBåå¾ã¨ã©ã¼: ${fetchError.message}` },
+        { error: `DB取得エラー: ${fetchError.message}` },
         { status: 500 }
       )
     }
 
     if (!books || books.length === 0) {
+      // 残数を確認
       const remaining = await getRemainingCount()
       return NextResponse.json({
-        message: 'ã«ã¼ã«ãã¼ã¹å¤å®ã®æ¸ç±ã¯ãã¹ã¦åå¤å®å®äº',
+        message: 'ルールベース判定の書籍はすべて再判定完了',
         processed: 0,
         remaining,
         source: 'sns/rerank',
@@ -70,14 +86,16 @@ export async function GET(request: NextRequest) {
     }> = []
 
     for (const book of books) {
+      // タイムアウト防止: 7秒で打ち切り
       if (Date.now() - startTime > 7000) break
 
       try {
         const snsData: SnsData = book.sns_data || {}
 
+        // 既存SNSデータからrankBookの入力を再構成
         const youtube = reconstructYouTube(snsData)
         const socialProfiles = reconstructProfiles(snsData)
-        const rawSearchResults: SearchResultRaw[] = []
+        const rawSearchResults: SearchResultRaw[] = []  // 生データは保存されていないため空
 
         const rankResult = await rankBook(
           {
@@ -94,8 +112,10 @@ export async function GET(request: NextRequest) {
           anthropicApiKey
         )
 
-        const newReason = `${rankResult.evaluationReason} [åå¤å®: ã«ã¼ã«ãã¼ã¹âClaude AI]`
+        // 再判定であることを明記
+        const newReason = `${rankResult.evaluationReason} [再判定: ルールベース→Claude AI]`
 
+        // DB更新（sns_dataは変更しない、rankとevaluation_reasonのみ更新）
         const { error: updateError } = await supabase
           .from('books')
           .update({
@@ -113,7 +133,7 @@ export async function GET(request: NextRequest) {
             newRank: rankResult.rank,
             oldReason: book.evaluation_reason || '',
             newReason,
-            error: `DBæ´æ°ã¨ã©ã¼: ${updateError.message}`,
+            error: `DB更新エラー: ${updateError.message}`,
           })
         } else {
           results.push({
@@ -162,19 +182,31 @@ export async function GET(request: NextRequest) {
   }
 }
 
+/**
+ * ルールベース判定の残数を取得
+ */
 async function getRemainingCount(): Promise<number> {
   const { count } = await supabase
     .from('books')
     .select('id', { count: 'exact', head: true })
-    .like('evaluation_reason', '%ã«ã¼ã«ãã¼ã¹å¤å®%')
+    .like('evaluation_reason', '%ルールベース判定%')
   return count || 0
 }
 
+/**
+ * evaluation_reasonから元のランクを抽出（ログ用）
+ */
 function extractOldRank(reason: string | null): string | null {
   if (!reason) return null
+  // "SNS合計フォロワーXX人（ルールベース判定）" のようなパターンからは
+  // 直接ランクは読めないが、書籍のrankカラムに入っている値を使う
   return null
 }
 
+/**
+ * 保存済みsns_dataからYouTubeChannelDataを再構成
+ * ※ 詳細データ（再生回数、動画リスト等）は保存されていないため簡略版
+ */
 function reconstructYouTube(snsData: SnsData): YouTubeChannelData | null {
   if (!snsData.youtube) return null
 
@@ -189,6 +221,9 @@ function reconstructYouTube(snsData: SnsData): YouTubeChannelData | null {
   }
 }
 
+/**
+ * 保存済みsns_dataからSocialProfile[]を再構成
+ */
 function reconstructProfiles(snsData: SnsData): SocialProfile[] {
   const profiles: SocialProfile[] = []
 
