@@ -47,5 +47,35 @@ export async function GET() {
     results.braveTest = { error: 'BRAVE_SEARCH_API_KEY not set' }
   }
 
+  // Google CSE テスト
+  const googleKey = process.env.GOOGLE_SEARCH_API_KEY
+  const googleCx = process.env.GOOGLE_SEARCH_CX
+  if (googleKey && googleCx) {
+    try {
+      const url = `https://www.googleapis.com/customsearch/v1?key=${googleKey}&cx=${googleCx}&q=${encodeURIComponent('"佐伯ポインティ"')}&num=5`
+      const res = await fetch(url, { signal: AbortSignal.timeout(5000) })
+
+      if (!res.ok) {
+        const errorBody = await res.text().catch(() => '')
+        results.googleCseTest = { status: res.status, error: errorBody.slice(0, 500) }
+      } else {
+        const data = await res.json()
+        const items = data.items || []
+        results.googleCseTest = {
+          status: 200,
+          resultCount: items.length,
+          totalResults: data.searchInformation?.totalResults,
+          results: items.slice(0, 3).map((r: { title?: string; link?: string; snippet?: string }) => ({
+            title: r.title, url: r.link, snippet: (r.snippet || '').slice(0, 100),
+          })),
+        }
+      }
+    } catch (e) {
+      results.googleCseTest = { error: e instanceof Error ? e.message : String(e) }
+    }
+  } else {
+    results.googleCseTest = { error: `GOOGLE_SEARCH_API_KEY: ${googleKey ? 'set' : 'NOT SET'}, CX: ${googleCx ? 'set' : 'NOT SET'}` }
+  }
+
   return NextResponse.json(results)
 }
