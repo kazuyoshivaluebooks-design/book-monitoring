@@ -114,8 +114,9 @@ async function searchWithSerper(
 
   // 中村さんの手動検索を再現: 「著者名 SNS」でGoogle検索
   // Serperは通常のGoogle検索結果を返すので、1クエリで十分な結果が得られる
+  // 全対象プラットフォーム: YouTube, X(Twitter), Instagram, Facebook, TikTok, Podcast
   const queries = [
-    `"${authorName}" SNS Twitter YouTube Instagram`,
+    `"${authorName}" SNS YouTube Twitter Instagram Facebook TikTok Podcast`,
   ]
 
   for (const query of queries) {
