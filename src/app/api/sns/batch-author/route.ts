@@ -43,12 +43,37 @@ function normalizeAuthor(raw: string): string {
 export async function GET() {
   // 「結果0件」の書籍を全取得（author, id のみ）
   // 5月中発売の書籍は間に合わない可能性が高いので除外
-  const { data: books, error } = await supabase
-    .from('books')
-    .select('id, author, release_date')
-    .or('evaluation_reason.ilike.%結果0件%,evaluation_reason.ilike.%結果 0件%')
-    .not('author', 'is', null)
-    .not('author', 'eq', '')
+  // Supabaseのデフォルト制限1000行を超えるためページネーションで全件取得
+  const allBooks: Array<{ id: string; author: string; release_date: string | null }> = []
+  const PAGE_SIZE = 1000
+  let from = 0
+  let hasMore = true
+  let fetchError: { message: string } | null = null
+
+  while (hasMore) {
+    const { data: page, error: pageError } = await supabase
+      .from('books')
+      .select('id, author, release_date')
+      .or('evaluation_reason.ilike.%結果0件%,evaluation_reason.ilike.%結果 0件%')
+      .not('author', 'is', null)
+      .not('author', 'eq', '')
+      .range(from, from + PAGE_SIZE - 1)
+
+    if (pageError) {
+      fetchError = pageError
+      break
+    }
+    if (page && page.length > 0) {
+      allBooks.push(...page)
+      from += page.length
+      hasMore = page.length === PAGE_SIZE
+    } else {
+      hasMore = false
+    }
+  }
+
+  const books = allBooks
+  const error = fetchError
 
   // 5月中の発売日の書籍を除外
   const filteredBooks = (books || []).filter(b => {
