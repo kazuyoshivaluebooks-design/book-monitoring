@@ -43,15 +43,25 @@ export async function searchYouTubeAuthor(
     const channels = searchData.items || []
     if (channels.length === 0) return null
 
-    // 著者名に最も近いチャンネルを選択（完全一致優先）
-    let bestChannel = channels[0]
+    // 著者名に最も近いチャンネルを選択（完全一致 or 部分一致のみ採用）
+    // 一致しない場合は別人のチャンネルの可能性が高いためnullを返す
+    let bestChannel = null
     for (const ch of channels) {
-      const title = ch.snippet?.channelTitle || ''
-      if (title === authorName || title.includes(authorName)) {
+      const title = (ch.snippet?.channelTitle || '').trim()
+      const desc = (ch.snippet?.description || '').trim()
+      if (
+        title === authorName ||
+        title.includes(authorName) ||
+        authorName.includes(title) ||
+        desc.includes(authorName)
+      ) {
         bestChannel = ch
         break
       }
     }
+
+    // 著者名と一致するチャンネルが見つからない場合はスキップ（別人防止）
+    if (!bestChannel) return null
 
     const channelId = bestChannel.snippet?.channelId || bestChannel.id?.channelId
     if (!channelId) return null
