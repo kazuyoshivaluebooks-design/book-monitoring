@@ -211,11 +211,21 @@ ${rawResultsSection}
 - 検索結果のスニペットに含まれるSNSアカウントのURLや数値も判断材料にしてください
 - 著者名から著名人と判断できる場合は、あなたの知識も活用してください
 
+## SNSアカウントの本人確認（重要）
+- 検索で見つかったSNSアカウント（特にInstagram、X、TikTok）が本当に著者本人のものかどうかを慎重に判断してください
+- 以下の場合は同姓同名の別人の可能性が高いため、そのアカウントのフォロワー数を判定に含めないでください：
+  - アカウントの表示名やプロフィール内容が著者（書籍の著者）と明らかに異なる人物を示している
+  - 検索スニペットの内容が著者の活動分野と無関係である
+  - 著者名が一般的な名前（例：田中太郎）で、アカウントが別人と思われる場合
+- 本人と確信が持てないSNSアカウントは、判定理由に「※本人未確認」と明記してください
+- 本人でないと判断したアカウントは完全に除外してください
+
 ## 出力フォーマット（JSON で回答）
 {
   "rank": "高確率" | "中確率" | "注目" | null,
   "reason": "判定理由を100文字以内で簡潔に記述",
-  "confidence": "high" | "medium" | "low"
+  "confidence": "high" | "medium" | "low",
+  "excludedProfiles": ["別人と判断したプラットフォーム名の配列（例: instagram）。なければ空配列"]
 }
 
 JSONのみで回答してください。マークダウンのコードブロックは不要です。`
@@ -237,10 +247,23 @@ JSONのみで回答してください。マークダウンのコードブロッ�
     const validRanks = ['高確率', '中確率', '注目', null]
     const rank = validRanks.includes(result.rank) ? result.rank : null
 
+    // Claudeが別人と判断したプロフィールをsnsDataから除外
+    const excluded: string[] = result.excludedProfiles || []
+    for (const platform of excluded) {
+      const key = platform.toLowerCase() as keyof SnsData
+      if (key in snsData) {
+        delete snsData[key]
+      }
+    }
+
+    const reasonSuffix = excluded.length > 0
+      ? ` [除外: ${excluded.join(', ')}(別人)]`
+      : ''
+
     return {
       rank,
       snsData,
-      evaluationReason: result.reason || '判定理由なし',
+      evaluationReason: (result.reason || '判定理由なし') + reasonSuffix,
     }
   } catch (e) {
     // Claude API エラー時はフォールバック（ルールベース判定）

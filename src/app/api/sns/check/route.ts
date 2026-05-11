@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
-import { searchYouTubeAuthor } from '@/lib/sns/youtube'
-import { searchSocialProfiles, QuotaExhaustedError } from '@/lib/sns/social-search'
+import { searchYouTubeAuthor, getYouTubeChannelByUrl } from '@/lib/sns/youtube'
+import { searchSocialProfiles, extractYouTubeUrls, QuotaExhaustedError } from '@/lib/sns/social-search'
 import { rankBook } from '@/lib/sns/ranker'
 
 export const dynamic = 'force-dynamic'
@@ -97,9 +97,9 @@ async function checkSingleBook(bookId: string): Promise<{
     }
   }
 
-  // 1. YouTube 調査
+  // 1. YouTube 調査（著者名でチャンネル検索）
   const youtubeApiKey = process.env.YOUTUBE_API_KEY
-  const youtube = youtubeApiKey
+  let youtube = youtubeApiKey
     ? await searchYouTubeAuthor(authorName, youtubeApiKey)
     : null
 
@@ -111,6 +111,19 @@ async function checkSingleBook(bookId: string): Promise<{
     googleSearchApiKey,
     googleSearchCx
   )
+
+  // 2.5. YouTube フォールバック: 著者名検索で見つからなかった場合、
+  //      Web検索結果のYouTubeチャンネルURLから直接データを取得
+  if (!youtube && youtubeApiKey && rawResults.length > 0) {
+    const ytUrls = extractYouTubeUrls(rawResults)
+    for (const ytUrl of ytUrls.slice(0, 2)) {  // 最大2つまで試行
+      const channelData = await getYouTubeChannelByUrl(ytUrl, youtubeApiKey)
+      if (channelData && channelData.subscriberCount > 0) {
+        youtube = channelData
+        break
+      }
+    }
+  }
 
   // 3. Claude API でランク判定
   const anthropicApiKey = process.env.ANTHROPIC_API_KEY

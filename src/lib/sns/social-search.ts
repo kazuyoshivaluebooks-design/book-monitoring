@@ -285,6 +285,39 @@ export async function searchSocialProfiles(
 }
 
 /**
+ * 検索結果からYouTubeチャンネルURLを抽出
+ * YouTube Data API の著者名検索で見つからなかった場合のフォールバック用
+ */
+export function extractYouTubeUrls(
+  rawResults: Array<{ title: string; url: string; snippet: string }>
+): string[] {
+  const urls: string[] = []
+  const seen = new Set<string>()
+
+  for (const item of rawResults) {
+    const lower = item.url.toLowerCase()
+    // チャンネルページ or ハンドルページのみ（個別動画ページは除外）
+    if (
+      (lower.includes('youtube.com/channel/') ||
+       lower.includes('youtube.com/@') ||
+       lower.includes('youtube.com/user/') ||
+       lower.includes('youtube.com/c/')) &&
+      !lower.includes('/watch') &&
+      !lower.includes('/shorts')
+    ) {
+      // 正規化して重複排除
+      const normalized = item.url.split('?')[0].replace(/\/$/, '')
+      if (!seen.has(normalized)) {
+        seen.add(normalized)
+        urls.push(item.url)
+      }
+    }
+  }
+
+  return urls
+}
+
+/**
  * テキストからフォロワー数を抽出
  */
 function parseFollowerCount(text: string): number | null {
