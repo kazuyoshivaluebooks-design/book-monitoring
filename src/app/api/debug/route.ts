@@ -1,144 +1,51 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextResponse } from 'next/server'
 
 export const dynamic = 'force-dynamic'
 
-/**
- * GET /api/debug?q=HIKAKIN
- * 検索APIの生レスポンスを返すデバッグ用エンドポイント
- * 優先順: Brave Search API → SearXNG → Google CSE
- * 環境変数: BRAVE_SEARCH_API_KEY, SEARXNG_ENABLED, GOOGLE_SEARCH_API_KEY, GOOGLE_SEARCH_CX
- */
-export async function GET(request: NextRequest) {
-  const { searchParams } = new URL(request.url)
-  const q = searchParams.get('q') || 'HIKAKIN'
-
-  const braveApiKey = process.env.BRAVE_SEARCH_API_KEY
-  const searxngRaw = process.env.SEARXNG_ENABLED
-  const searxngEnabled = searxngRaw === 'true'
-  const googleApiKey = process.env.GOOGLE_SEARCH_API_KEY
-  const cx = process.env.GOOGLE_SEARCH_CX
-
-  // デバッグ: 環境変数の状態
-  const envStatus = {
-    hasBraveKey: !!braveApiKey,
-    searxngRaw,
-    searxngEnabled,
-    hasGoogleKey: !!googleApiKey,
-    hasCx: !!cx,
+export async function GET() {
+  const results: Record<string, unknown> = {
+    envCheck: {
+      BRAVE_SEARCH_API_KEY: process.env.BRAVE_SEARCH_API_KEY ? `set (${process.env.BRAVE_SEARCH_API_KEY.slice(0, 8)}...)` : 'NOT SET',
+      GOOGLE_SEARCH_API_KEY: process.env.GOOGLE_SEARCH_API_KEY ? 'set' : 'NOT SET',
+      GOOGLE_SEARCH_CX: process.env.GOOGLE_SEARCH_CX ? 'set' : 'NOT SET',
+      YOUTUBE_API_KEY: process.env.YOUTUBE_API_KEY ? 'set' : 'NOT SET',
+      ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ? 'set' : 'NOT SET',
+      SEARXNG_ENABLED: process.env.SEARXNG_ENABLED || 'NOT SET',
+      SEARXNG_DISABLED: process.env.SEARXNG_DISABLED || 'NOT SET',
+    },
   }
 
-  // 1. Brave Search API
-  if (braveApiKey) {
-    const snsQuery = `"${q}" site:x.com OR site:instagram.com OR site:youtube.com OR site:tiktok.com OR site:note.com`
-    const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(snsQuery)}&count=10`
-
+  const braveKey = process.env.BRAVE_SEARCH_API_KEY
+  if (braveKey) {
     try {
+      const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent('"佐伯ポインティ" site:youtube.com OR site:x.com')}&count=5`
       const res = await fetch(url, {
         headers: {
           'Accept': 'application/json',
           'Accept-Encoding': 'gzip',
-          'X-Subscription-Token': braveApiKey,
+          'X-Subscription-Token': braveKey,
         },
-        signal: AbortSignal.timeout(10000),
+        signal: AbortSignal.timeout(5000),
       })
-      const data = await res.json()
-      return NextResponse.json({
-        engine: 'brave',
-        query: snsQuery,
-        apiKeyPrefix: braveApiKey.slice(0, 10) + '...',
-        apiStatus: res.status,
-        totalResults: data.web?.results?.length || 0,
-        items: (data.web?.results || []).slice(0, 5).map((r: { title?: string; url?: string; description?: string }) => ({
-          title: r.title, link: r.url, snippet: (r.description || '').slice(0, 150),
-        })),
-        error: data.error || null,
-      })
-    } catch (e) {
-      return NextResponse.json({ engine: 'brave', error: String(e) }, { status: 500 })
-    }
-  }
 
-  // 2. SearXNG
-  if (searxngEnabled) {
-    const snsQuery = `"${q}" site:x.com OR site:instagram.com OR site:youtube.com OR site:tiktok.com OR site:note.com`
-    const instances = [
-      'https://search.ononoki.org',
-      'https://searx.tiekoetter.com',
-      'https://searx.be',
-      'https://search.sapti.me',
-      'https://searx.nixnet.services',
-      'https://searx.work',
-      'https://search.bus-hit.me',
-      'https://searx.zhenyapav.com',
-      'https://search.mdosch.de',
-      'https://searx.juancord.xyz',
-    ]
-
-    const errors: Array<{instance: string; error: string; status?: number}> = []
-
-    for (const instance of instances) {
-      try {
-        const url = `${instance}/search?q=${encodeURIComponent(snsQuery)}&format=json&categories=general&language=ja`
-        const res = await fetch(url, {
-          headers: { 'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0 (compatible; BookMonitoring/1.0)' },
-          signal: AbortSignal.timeout(8000),
-        })
-        if (!res.ok) {
-          errors.push({ instance, error: `HTTP ${res.status}`, status: res.status })
-          continue
-        }
-
+      if (!res.ok) {
+        const errorBody = await res.text().catch(() => '')
+        results.braveTest = { status: res.status, statusText: res.statusText, error: errorBody.slice(0, 500) }
+      } else {
         const data = await res.json()
-        return NextResponse.json({
-          engine: 'searxng',
-          envStatus,
-          instance,
-          query: snsQuery,
-          apiStatus: res.status,
-          totalResults: data.results?.length || 0,
-          items: (data.results || []).slice(0, 5).map((r: { title?: string; url?: string; content?: string }) => ({
-            title: r.title, link: r.url, snippet: (r.content || '').slice(0, 150),
-          })),
-          triedInstances: errors.length,
-        })
-      } catch (e) {
-        errors.push({ instance, error: String(e) })
-        continue
+        const webResults = data.web?.results || []
+        results.braveTest = {
+          status: 200,
+          resultCount: webResults.length,
+          results: webResults.slice(0, 3).map((r: { title?: string; url?: string }) => ({ title: r.title, url: r.url })),
+        }
       }
-    }
-    return NextResponse.json({ engine: 'searxng', error: 'All instances failed', errors, envStatus }, { status: 500 })
-  }
-
-  // 3. Google CSE
-  if (googleApiKey && cx) {
-    const url = `https://www.googleapis.com/customsearch/v1?key=${googleApiKey}&cx=${cx}&q=${encodeURIComponent(q)}&num=5`
-    try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(8000) })
-      const data = await res.json()
-      return NextResponse.json({
-        engine: 'google',
-        envStatus,
-        query: q, cx,
-        apiKeyPrefix: googleApiKey.slice(0, 10) + '...',
-        apiStatus: res.status,
-        totalResults: data.searchInformation?.totalResults,
-        itemCount: data.items?.length || 0,
-        items: (data.items || []).slice(0, 3).map((i: { title?: string; link?: string; snippet?: string }) => ({
-          title: i.title, link: i.link, snippet: (i.snippet || '').slice(0, 100),
-        })),
-        error: data.error || null,
-      })
     } catch (e) {
-      return NextResponse.json({ engine: 'google', error: String(e) }, { status: 500 })
+      results.braveTest = { error: e instanceof Error ? e.message : String(e) }
     }
+  } else {
+    results.braveTest = { error: 'BRAVE_SEARCH_API_KEY not set' }
   }
 
-  return NextResponse.json({
-    error: 'No search API configured',
-    hasBraveKey: !!braveApiKey,
-    searxngEnabled,
-    hasGoogleKey: !!googleApiKey,
-    hasCx: !!cx,
-    hint: 'Set SEARXNG_ENABLED=true for free search (no API key needed)',
-  })
+  return NextResponse.json(results)
 }
