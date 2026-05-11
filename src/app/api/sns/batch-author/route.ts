@@ -66,6 +66,7 @@ export async function GET() {
       .or('evaluation_reason.ilike.%結果0件%,evaluation_reason.ilike.%結果 0件%')
       .not('evaluation_reason', 'ilike', '%ヒットなし%')
       .not('evaluation_reason', 'ilike', '%検索ヒット%')
+      .not('evaluation_reason', 'ilike', '%[検索:%')
       .not('author', 'is', null)
       .not('author', 'eq', '')
       .range(from, from + PAGE_SIZE - 1)
