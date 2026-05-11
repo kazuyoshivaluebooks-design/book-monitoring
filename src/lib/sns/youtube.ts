@@ -27,6 +27,29 @@ export type YouTubeChannelData = {
 }
 
 /**
+ * 著者名とチャンネル名に有意な重複があるか判定
+ * 例: "佐伯ポインティ" と "ポインティTV" → "ポインティ"(5文字)が共通 → true
+ *
+ * 著者名を3文字以上の部分文字列に分割し、チャンネル名に含まれるかチェック。
+ * 短すぎる一致（2文字以下）は誤検出が多いため除外。
+ */
+function hasSignificantOverlap(authorName: string, channelTitle: string): boolean {
+  if (!authorName || !channelTitle) return false
+  const minLen = 3  // 3文字以上の共通部分を要求
+
+  // 著者名の連続部分文字列をチェック（長い方から）
+  for (let len = authorName.length; len >= minLen; len--) {
+    for (let start = 0; start <= authorName.length - len; start++) {
+      const sub = authorName.slice(start, start + len)
+      if (channelTitle.includes(sub)) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
+/**
  * 著者名でYouTubeチャンネルを検索し、チャンネル情報 + 直近動画のエンゲージメントを取得
  */
 export async function searchYouTubeAuthor(
@@ -53,7 +76,8 @@ export async function searchYouTubeAuthor(
         title === authorName ||
         title.includes(authorName) ||
         authorName.includes(title) ||
-        desc.includes(authorName)
+        desc.includes(authorName) ||
+        hasSignificantOverlap(authorName, title)
       ) {
         bestChannel = ch
         break
