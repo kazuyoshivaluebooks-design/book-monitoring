@@ -64,6 +64,8 @@ export async function GET() {
       .from('books')
       .select('id, author, release_date')
       .or('evaluation_reason.ilike.%結果0件%,evaluation_reason.ilike.%結果 0件%')
+      .not('evaluation_reason', 'ilike', '%ヒットなし%')
+      .not('evaluation_reason', 'ilike', '%検索ヒット%')
       .not('author', 'is', null)
       .not('author', 'eq', '')
       .range(from, from + PAGE_SIZE - 1)
@@ -174,6 +176,8 @@ export async function POST(request: NextRequest) {
     .from('books')
     .select('id, title, author, publisher, isbn, price, release_date, evaluation_reason')
     .or('evaluation_reason.ilike.%結果0件%,evaluation_reason.ilike.%結果 0件%')
+    .not('evaluation_reason', 'ilike', '%ヒットなし%')
+    .not('evaluation_reason', 'ilike', '%検索ヒット%')
     .not('author', 'is', null)
     .not('author', 'eq', '')
     .limit(500)  // 十分な量を取得してからグルーピング
@@ -267,7 +271,7 @@ export async function POST(request: NextRequest) {
         const debugInfo = rawResults.slice(0, 3).map(r => `[${r.title}](${r.url})`).join('; ')
         evalReason += ` [検索ヒット${rawResults.length}件: ${debugInfo.slice(0, 200)}]`
       } else {
-        evalReason += ' [検索: 結果0件]'
+        evalReason += ' [検索: ヒットなし]'
       }
 
       const finalSnsData = Object.keys(rankResult.snsData).length === 0
