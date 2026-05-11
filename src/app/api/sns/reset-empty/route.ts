@@ -21,6 +21,7 @@ export async function GET() {
 
 // POST /api/sns/reset-empty
 // 検索結果0件だった書籍のevaluation_reasonをnullにリセットし、再調査対象にする
+// Body: { limit?: number } (default: 全件, テスト時は50等を指定)
 export async function POST(request: NextRequest) {
   const authHeader = request.headers.get('authorization')
   const cronSecret = process.env.CRON_SECRET
@@ -36,13 +37,22 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  const body = await request.json().catch(() => ({}))
+  const limit = body.limit || 0  // 0 = 全件
+
   // 「結果0件」を含むevaluation_reasonの書籍を検索
-  const { data: emptyBooks, error: fetchError } = await supabase
+  let query = supabase
     .from('books')
     .select('id, title, author, evaluation_reason')
     .or('evaluation_reason.ilike.%結果0件%,evaluation_reason.ilike.%結果 0件%')
     .not('author', 'is', null)
     .not('author', 'eq', '')
+
+  if (limit > 0) {
+    query = query.limit(limit)
+  }
+
+  const { data: emptyBooks, error: fetchError } = await query
 
   if (fetchError) {
     return NextResponse.json({ error: fetchError.message }, { status: 500 })
@@ -77,5 +87,6 @@ export async function POST(request: NextRequest) {
     message: `${resetCount}件の書籍をリセットしました（再調査対象になります）`,
     reset: resetCount,
     total: emptyBooks.length,
+    limited: limit > 0 ? limit : 'all',
   })
 }
