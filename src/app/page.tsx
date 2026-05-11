@@ -21,8 +21,8 @@ const STATUS_OPTIONS = ['未対応', '仕入検討中', '仕入済', '見送り'
 // ランクの優先度（数値が小さいほど上位）
 const RANK_PRIORITY: Record<string, number> = {
   '高確率': 1,
-  '注目': 2,
-  '中確率': 3,
+  '中確率': 2,
+  '注目': 3,
 }
 const RANK_NONE = 99
 
@@ -302,8 +302,8 @@ type TabKey = 'high' | 'watch' | 'mid' | 'all'
 
 const TABS: { key: TabKey; label: string; rankFilter: string; color: string }[] = [
   { key: 'high',  label: '高確率',  rankFilter: '高確率',  color: 'red' },
-  { key: 'watch', label: '注目',    rankFilter: '注目',    color: 'blue' },
   { key: 'mid',   label: '中確率',  rankFilter: '中確率',  color: 'orange' },
+  { key: 'watch', label: '注目',    rankFilter: '注目',    color: 'blue' },
   { key: 'all',   label: '全書籍',  rankFilter: '',        color: 'gray' },
 ]
 
