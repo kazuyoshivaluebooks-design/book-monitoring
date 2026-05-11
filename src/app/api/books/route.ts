@@ -99,6 +99,11 @@ export async function GET(request: NextRequest) {
     .from('books')
     .select('*')
 
+  // 「[詳細取得中]」の未補完書籍を除外（検索時は除外しない）
+  if (!search) {
+    query = query.not('title', 'like', '[詳細取得中]%')
+  }
+
   if (search) {
     query = query.or(`title.ilike.%${search}%,author.ilike.%${search}%,publisher.ilike.%${search}%`)
   }

@@ -29,11 +29,12 @@ export async function GET(request: NextRequest) {
       })),
     })
   }
-  // 1. ランク別の分布
+  // 1. ランク別の分布（未補完書籍を除外）
   const { data: rankDist } = await supabase
     .from('books')
     .select('rank')
     .not('evaluation_reason', 'is', null)
+    .not('title', 'like', '[詳細取得中]%')
 
   const rankCounts: Record<string, number> = {}
   for (const row of rankDist || []) {
