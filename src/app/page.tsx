@@ -230,18 +230,18 @@ function BookCard({
       <SnsInfo snsData={book.sns_data || {}} />
 
       {book.evaluation_reason && (
-        <div className="mt-2 bg-amber-50 rounded p-2 text-xs text-amber-800 line-clamp-3">
+        <div
+          className={`mt-2 bg-amber-50 rounded p-2 text-xs text-amber-800 cursor-pointer ${showDetail ? '' : 'line-clamp-3'}`}
+          onClick={() => setShowDetail(!showDetail)}
+          title={showDetail ? 'クリックで折りたたむ' : 'クリックで全文表示'}
+        >
           <span className="font-bold">判定根拠:</span> {book.evaluation_reason}
+          {!showDetail && <span className="text-amber-500 ml-1">…▼</span>}
         </div>
       )}
 
       {showDetail && (
         <div className="mt-3 pt-3 border-t border-gray-100 space-y-2 text-sm">
-          {book.evaluation_reason && (
-            <div className="bg-amber-50 rounded p-2 text-xs text-amber-800">
-              <span className="font-bold">判定根拠（全文）:</span> {book.evaluation_reason}
-            </div>
-          )}
           <div className="grid grid-cols-2 gap-2 text-gray-600">
             {book.release_date && (
               <div><span className="text-gray-400">発売日:</span> {book.release_date}</div>
