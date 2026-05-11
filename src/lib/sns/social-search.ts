@@ -68,63 +68,41 @@ function buildSiteQuery(authorName: string): string {
 }
 
 // ─────── SearXNG (APIキー不要・無料) ───────
-
-// インスタンスを多めに用意（レート制限回避のためランダムローテーション）
-const SEARXNG_INSTANCES = [
-  'https://searx.be',
-  'https://search.ononoki.org',
-  'https://searx.tiekoetter.com',
-  'https://search.sapti.me',
-  'https://searxng.site',
-  'https://searx.work',
-  'https://search.bus-hit.me',
-  'https://northboot.xyz',
-  'https://opnxng.com',
-  'https://searx.ox2.fr',
-]
-
-// ランダムに並び替えて3つ選ぶ（毎回異なるインスタンスを使用）
-function pickInstances(count: number): string[] {
-  const shuffled = [...SEARXNG_INSTANCES].sort(() => Math.random() - 0.5)
-  return shuffled.slice(0, count)
-}
+// ※ 2026年5月時点: 公開インスタンスの大半がJSON APIを無効化（403 Forbidden）
+// セルフホスト時は SEARXNG_INSTANCE_URL 環境変数で指定し SEARXNG_ENABLED=true に設定
 
 async function searchWithSearXNG(
   authorName: string
 ): Promise<Array<{ title: string; link: string; snippet: string }>> {
+  const instanceUrl = process.env.SEARXNG_INSTANCE_URL
+  if (!instanceUrl) return []
+
   const query = buildSiteQuery(authorName)
 
-  const instances = pickInstances(4)  // ランダムに4つ選ぶ
-  for (const instance of instances) {
-    try {
-      const url = `${instance}/search?q=${encodeURIComponent(query)}&format=json&categories=general&language=ja`
-      const res = await fetch(url, {
-        headers: {
-          'Accept': 'application/json',
-          'User-Agent': 'Mozilla/5.0 (compatible; BookMonitoring/1.0)',
-        },
-        signal: AbortSignal.timeout(3000),  // 3秒タイムアウト（Vercel 10s制限対応）
-      })
+  try {
+    const url = `${instanceUrl}/search?q=${encodeURIComponent(query)}&format=json&categories=general&language=ja`
+    const res = await fetch(url, {
+      headers: {
+        'Accept': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (compatible; BookMonitoring/1.0)',
+      },
+      signal: AbortSignal.timeout(3000),
+    })
 
-      if (!res.ok) continue
+    if (!res.ok) return []
 
-      const data = await res.json()
-      const results = data.results || []
-      if (results.length === 0) continue  // 結果0なら次のインスタンスへ
+    const data = await res.json()
+    const results = data.results || []
+    if (results.length === 0) return []
 
-      return results.slice(0, 20).map((r: { title?: string; url?: string; content?: string }) => ({
-        title: r.title || '',
-        link: r.url || '',
-        snippet: r.content || '',
-      }))
-    } catch {
-      // このインスタンスが失敗したら次を試す
-      continue
-    }
+    return results.slice(0, 20).map((r: { title?: string; url?: string; content?: string }) => ({
+      title: r.title || '',
+      link: r.url || '',
+      snippet: r.content || '',
+    }))
+  } catch {
+    return []
   }
-
-  // 全インスタンス失敗
-  return []
 }
 
 // ─────── Brave Search API ───────
@@ -135,16 +113,19 @@ async function searchWithBrave(
 ): Promise<Array<{ title: string; link: string; snippet: string }>> {
   const allItems: Array<{ title: string; link: string; snippet: string }> = []
 
-  const siteGroup1 = ['x.com', 'twitter.com', 'instagram.com', 'youtube.com', 'tiktok.com', 'note.com']
-  const siteGroup2 = ['facebook.com', 'voicy.jp', 'stand.fm', 'podcasts.apple.com', 'open.spotify.com']
-
+  // クエリ戦略:
+  //   1. SNSサイト限定検索（著者のSNSプロフィールを直接発見）
+  //   2. 一般検索「著者名 SNS」（サイト制限なし → プロフィールリンクを含む記事・インタビュー等を発見）
+  // 2つ目のクエリでsite:制限を外すことで、SNS以外のサイトに書かれた
+  // フォロワー数やSNSアカウントへの言及も拾える
+  const allSites = SNS_SITES.map(s => `site:${s}`).join(' OR ')
   const queries = [
-    `"${authorName}" ${siteGroup1.map(s => `site:${s}`).join(' OR ')}`,
-    `"${authorName}" ${siteGroup2.map(s => `site:${s}`).join(' OR ')}`,
+    `"${authorName}" (${allSites})`,
+    `"${authorName}" SNS OR Twitter OR YouTube OR Instagram OR フォロワー`,
   ]
 
   for (let i = 0; i < queries.length; i++) {
-    if (i > 0) await new Promise(r => setTimeout(r, 500))
+    if (i > 0) await new Promise(r => setTimeout(r, 300))
 
     try {
       const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(queries[i])}&count=20`
@@ -154,25 +135,32 @@ async function searchWithBrave(
           'Accept-Encoding': 'gzip',
           'X-Subscription-Token': apiKey,
         },
-        signal: AbortSignal.timeout(4000),  // 4秒タイムアウト
+        signal: AbortSignal.timeout(4000),
       })
 
       if (res.status === 429) {
-        // クォータ切れ→即座にフォールバックへ（リトライしない）
         throw new QuotaExhaustedError('Brave Search APIクォータ超過')
       }
 
       if (res.status === 401 || res.status === 403) {
-        // 認証エラー→即座にフォールバックへ
-        return []
+        return allItems  // 1クエリ目の結果があればそれを返す
       }
 
       if (!res.ok) continue
 
       const data = await res.json()
-      allItems.push(...(data.web?.results || []).map((r: { title?: string; url?: string; description?: string }) => ({
+      const results = (data.web?.results || []).map((r: { title?: string; url?: string; description?: string }) => ({
         title: r.title || '', link: r.url || '', snippet: r.description || '',
-      })))
+      }))
+
+      // 重複URL排除
+      const existingUrls = new Set(allItems.map(item => item.link))
+      for (const item of results) {
+        if (!existingUrls.has(item.link)) {
+          allItems.push(item)
+          existingUrls.add(item.link)
+        }
+      }
     } catch (e) {
       if (e instanceof QuotaExhaustedError) throw e
     }
@@ -236,23 +224,24 @@ export async function searchSocialProfiles(
   let allItems: Array<{ title: string; link: string; snippet: string }> = []
 
   const braveApiKey = process.env.BRAVE_SEARCH_API_KEY
-  const searxngDisabled = process.env.SEARXNG_DISABLED === 'true'
+  const searxngEnabled = process.env.SEARXNG_ENABLED === 'true' && process.env.SEARXNG_INSTANCE_URL
 
   // 優先順に試行し、結果が空ならフォールバック
+  // 1. Brave Search API（メイン）
   if (braveApiKey) {
     try {
       allItems = await searchWithBrave(authorName, braveApiKey)
     } catch {
-      // Braveクォータ切れ・エラー時はSearXNGにフォールバック（スローしない）
+      // Braveクォータ切れ・エラー時はフォールバック（スローしない）
     }
   }
 
-  // Braveが空結果 or 未設定 → SearXNG（無料・無制限）
-  if (allItems.length === 0 && !searxngDisabled) {
+  // 2. SearXNG セルフホスト（SEARXNG_ENABLED=true + SEARXNG_INSTANCE_URL設定時のみ）
+  if (allItems.length === 0 && searxngEnabled) {
     allItems = await searchWithSearXNG(authorName)
   }
 
-  // SearXNGも空 → Google CSE
+  // 3. Google CSE（最終フォールバック）
   if (allItems.length === 0 && apiKey && cx) {
     allItems = await searchWithGoogle(authorName, apiKey, cx)
   }
