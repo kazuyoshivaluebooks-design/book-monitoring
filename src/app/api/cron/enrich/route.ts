@@ -88,10 +88,13 @@ function shouldExcludeByTitle(title: string): boolean {
 }
 
 export async function GET(request: NextRequest) {
-  const authHeader = request.headers.get('authorization')
   const cronSecret = process.env.CRON_SECRET
-  if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  if (cronSecret) {
+    const token = request.nextUrl.searchParams.get('token')
+    const authHeader = request.headers.get('authorization')
+    if (token !== cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
   }
 
   const startTime = Date.now()
