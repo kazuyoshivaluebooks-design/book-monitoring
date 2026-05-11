@@ -24,9 +24,18 @@ const SKIP_AUTHOR_PATTERNS = [
   /省$/, /庁$/, /局$/, /課$/, /部会$/,
   /株式会社/, /有限会社/, /合同会社/, /一般社団法人/, /一般財団法人/,
   /^編集/, /制作$/, /事務所$/,
+  /センター$/, /総合研究所/, /支援センター/,
 ]
 
+/** 出版社名・組織名・不明著者を直接除外 */
+const SKIP_AUTHOR_EXACT = new Set([
+  '講談社', '晋遊舎', '旺文社', 'Ｇａｋｋｅｎ', 'Gakken',
+  'アンソロジー', '未定', '地球の歩き方編集室',
+  'いとう総研資格取得支援センター',
+])
+
 function shouldSkipAuthor(authorName: string): boolean {
+  if (SKIP_AUTHOR_EXACT.has(authorName)) return true
   return SKIP_AUTHOR_PATTERNS.some(p => p.test(authorName))
 }
 
