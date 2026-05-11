@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
-import { searchYouTubeAuthor, getYouTubeChannelByUrl } from '@/lib/sns/youtube'
+import { getYouTubeChannelByUrl } from '@/lib/sns/youtube'
 import { searchSocialProfiles, extractYouTubeUrls, QuotaExhaustedError } from '@/lib/sns/social-search'
 import { rankBook } from '@/lib/sns/ranker'
 
@@ -97,13 +97,7 @@ async function checkSingleBook(bookId: string): Promise<{
     }
   }
 
-  // 1. YouTube 調査（著者名でチャンネル検索）
-  const youtubeApiKey = process.env.YOUTUBE_API_KEY
-  let youtube = youtubeApiKey
-    ? await searchYouTubeAuthor(authorName, youtubeApiKey)
-    : null
-
-  // 2. SNS検索（汎用検索2回 → URL判別 + 生データをClaudeに渡す）
+  // 1. Web検索（SNSプロフィール検出 + 生データをClaudeに渡す）
   const googleSearchApiKey = process.env.GOOGLE_SEARCH_API_KEY
   const googleSearchCx = process.env.GOOGLE_SEARCH_CX
   const { profiles: socialProfiles, rawResults } = await searchSocialProfiles(
@@ -112,11 +106,13 @@ async function checkSingleBook(bookId: string): Promise<{
     googleSearchCx
   )
 
-  // 2.5. YouTube フォールバック: 著者名検索で見つからなかった場合、
-  //      Web検索結果のYouTubeチャンネルURLから直接データを取得
-  if (!youtube && youtubeApiKey && rawResults.length > 0) {
+  // 2. YouTube: Web検索結果からチャンネルURLを抽出し、API(1ユニット)で正確なデータ取得
+  //    ※ B案: searchYouTubeAuthor(100ユニット)を廃止し、Web検索結果を主経路に
+  const youtubeApiKey = process.env.YOUTUBE_API_KEY
+  let youtube = null
+  if (youtubeApiKey && rawResults.length > 0) {
     const ytUrls = extractYouTubeUrls(rawResults)
-    for (const ytUrl of ytUrls.slice(0, 2)) {  // 最大2つまで試行
+    for (const ytUrl of ytUrls.slice(0, 2)) {
       const channelData = await getYouTubeChannelByUrl(ytUrl, youtubeApiKey)
       if (channelData && channelData.subscriberCount > 0) {
         youtube = channelData

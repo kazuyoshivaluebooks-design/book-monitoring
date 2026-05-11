@@ -16,9 +16,11 @@ export const maxDuration = 10
  * Body: { limit?: number } (default: 50)
  */
 
-/** openBD から著者・出版社を一括取得 */
-async function fetchFromOpenBD(isbnList: string[]): Promise<Map<string, { author: string; publisher: string }>> {
-  const result = new Map<string, { author: string; publisher: string }>()
+type BookDetail = { title: string; author: string; publisher: string }
+
+/** openBD から タイトル・著者・出版社を一括取得 */
+async function fetchFromOpenBD(isbnList: string[]): Promise<Map<string, BookDetail>> {
+  const result = new Map<string, BookDetail>()
   if (isbnList.length === 0) return result
 
   try {
@@ -32,10 +34,11 @@ async function fetchFromOpenBD(isbnList: string[]): Promise<Map<string, { author
     for (let i = 0; i < data.length; i++) {
       const item = data[i]
       if (!item?.summary) continue
+      const title = item.summary.title || ''
       const author = item.summary.author || ''
       const publisher = item.summary.publisher || ''
-      if (author) {
-        result.set(isbnList[i], { author, publisher })
+      if (author || title) {
+        result.set(isbnList[i], { title, author, publisher })
       }
     }
   } catch {
@@ -45,11 +48,11 @@ async function fetchFromOpenBD(isbnList: string[]): Promise<Map<string, { author
   return result
 }
 
-/** Google Books API から著者・出版社を個別取得 */
+/** Google Books API から タイトル・著者・出版社を個別取得 */
 async function fetchFromGoogleBooks(
   isbn: string,
   apiKey: string
-): Promise<{ author: string; publisher: string } | null> {
+): Promise<BookDetail | null> {
   try {
     const url = `https://www.googleapis.com/books/v1/volumes?q=isbn:${isbn}&key=${apiKey}&maxResults=1`
     const res = await fetch(url, { signal: AbortSignal.timeout(4000) })
@@ -59,11 +62,12 @@ async function fetchFromGoogleBooks(
     const item = data.items?.[0]?.volumeInfo
     if (!item) return null
 
+    const title = item.title || ''
     const author = item.authors?.join('、') || ''
     const publisher = item.publisher || ''
-    if (!author) return null
+    if (!author && !title) return null
 
-    return { author, publisher }
+    return { title, author, publisher }
   } catch {
     return null
   }
@@ -74,11 +78,11 @@ export async function POST(request: NextRequest) {
     const body = await request.json().catch(() => ({}))
     const limit = Math.min(body.limit || 50, 100)
 
-    // 著者名が空の書籍を取得
+    // 著者名が空の書籍 または [詳細取得中] の書籍を取得
     const { data: booksNoAuthor, error } = await supabase
       .from('books')
       .select('id, isbn, title, author, publisher, evaluation_reason')
-      .or('author.is.null,author.eq.')
+      .or('author.is.null,author.eq.,title.like.[詳細取得中]%')
       .not('isbn', 'is', null)
       .limit(limit)
 
@@ -112,7 +116,7 @@ export async function POST(request: NextRequest) {
     // 2) openBD で見つからなかった分を Google Books で取得
     const googleApiKey = process.env.GOOGLE_SEARCH_API_KEY || process.env.YOUTUBE_API_KEY
     const notFoundIsbns = isbnList.filter(isbn => !openbdResults.has(isbn))
-    const googleResults = new Map<string, { author: string; publisher: string }>()
+    const googleResults = new Map<string, BookDetail>()
 
     if (googleApiKey && notFoundIsbns.length > 0) {
       for (const isbn of notFoundIsbns) {
@@ -137,6 +141,10 @@ export async function POST(request: NextRequest) {
       if (!book) continue
 
       const updateData: Record<string, unknown> = {}
+      // タイトルが未設定 or [詳細取得中] の場合は更新
+      if (info.title && (!book.title || book.title.startsWith('[詳細取得中]'))) {
+        updateData.title = info.title
+      }
       if (info.author && (!book.author || book.author.trim() === '')) {
         updateData.author = info.author
       }
@@ -146,10 +154,9 @@ export async function POST(request: NextRequest) {
 
       if (Object.keys(updateData).length === 0) continue
 
-      // SNS調査スキップ状態をリセット（再調査可能に）
-      if (book.evaluation_reason?.includes('SNS調査スキップ')) {
+      // SNS調査スキップ状態 or 詳細補完待ち をリセット（再調査可能に）
+      if (book.evaluation_reason?.includes('SNS調査スキップ') || book.evaluation_reason?.includes('詳細補完待ち')) {
         updateData.evaluation_reason = null
-        // JSONB として正しく空オブジェクトを保存（文字列 "{}" にならないよう注意）
         updateData.sns_data = { _needsRecheck: true }
         resetForSns++
       }

@@ -1,6 +1,9 @@
 /**
  * Claude API で SNS データを基に著者の影響力と書籍の販売見込みを総合判定
  *
+ * B案: Claudeが検索結果からSNSアカウントの特定・本人確認・ランク判定を一括処理
+ * YouTubeデータはAPI取得済みのものを渡し、それ以外はClaudeが検索結果から判断
+ *
  * 必要な環境変数: ANTHROPIC_API_KEY
  * 推定コスト: 1冊あたり約$0.001〜0.003
  */
@@ -27,6 +30,7 @@ type BookInfo = {
 
 /**
  * 収集した SNS データから Claude API でランク判定
+ * B案: Claudeがアカウント特定 + ランク判定を一括処理
  */
 export async function rankBook(
   book: BookInfo,
@@ -37,94 +41,10 @@ export async function rankBook(
 ): Promise<RankResult> {
   const client = new Anthropic({ apiKey })
 
-  // SNS データを構造化
-  const snsData: SnsData = {}
-
-  // YouTube
-  if (youtube) {
-    snsData.youtube = {
-      subscribers: youtube.subscriberCount,
-      url: youtube.channelUrl,
-    }
-  }
-
-  // X/Twitter
-  const xProfile = socialProfiles.find(p => p.platform === 'x')
-  if (xProfile) {
-    snsData.x = {
-      followers: xProfile.estimatedFollowers || 0,
-      url: xProfile.url,
-    }
-  }
-
-  // Instagram
-  const igProfile = socialProfiles.find(p => p.platform === 'instagram')
-  if (igProfile) {
-    snsData.instagram = {
-      followers: igProfile.estimatedFollowers || 0,
-      url: igProfile.url,
-    }
-  }
-
-  // Facebook
-  const fbProfile = socialProfiles.find(p => p.platform === 'facebook')
-  if (fbProfile) {
-    snsData.facebook = {
-      followers: fbProfile.estimatedFollowers || 0,
-      url: fbProfile.url,
-    }
-  }
-
-  // TikTok
-  const tiktokProfile = socialProfiles.find(p => p.platform === 'tiktok')
-  if (tiktokProfile) {
-    snsData.tiktok = {
-      followers: tiktokProfile.estimatedFollowers || 0,
-      url: tiktokProfile.url,
-    }
-  }
-
-  // Voicy
-  const voicyProfile = socialProfiles.find(p => p.platform === 'voicy')
-  if (voicyProfile) {
-    snsData.voicy = {
-      followers: voicyProfile.estimatedFollowers || 0,
-      url: voicyProfile.url,
-    }
-  }
-
-  // stand.fm
-  const standfmProfile = socialProfiles.find(p => p.platform === 'standfm')
-  if (standfmProfile) {
-    snsData.standfm = {
-      followers: standfmProfile.estimatedFollowers || 0,
-      url: standfmProfile.url,
-    }
-  }
-
-  // Podcast (Apple/Spotify)
-  const podcastProfile = socialProfiles.find(p => p.platform === 'podcast')
-  if (podcastProfile) {
-    snsData.podcast = {
-      followers: podcastProfile.estimatedFollowers || 0,
-      url: podcastProfile.url,
-      platform: podcastProfile.url?.includes('spotify') ? 'Spotify' : 'Apple Podcasts',
-    }
-  }
-
-  // note
-  const noteProfile = socialProfiles.find(p => p.platform === 'note')
-  if (noteProfile) {
-    snsData.note = {
-      followers: noteProfile.estimatedFollowers || 0,
-      url: noteProfile.url,
-    }
-  }
-
-  // Claude API で判定
+  // YouTube データセクション（API取得済みの正確なデータ）
   const youtubeSection = youtube
     ? `
-## YouTube データ
+## YouTube データ（API取得済み・正確な数値）
 - チャンネル名: ${youtube.channelTitle}
 - 登録者数: ${youtube.subscriberCount.toLocaleString()}人
 - 総再生回数: ${youtube.viewCount.toLocaleString()}回
@@ -133,35 +53,36 @@ export async function rankBook(
 ${youtube.recentVideos.map(v =>
   `  - 「${v.title}」再生${v.viewCount.toLocaleString()} / いいね${v.likeCount.toLocaleString()} / コメント${v.commentCount.toLocaleString()}`
 ).join('\n')}`
-    : '## YouTube: チャンネル未発見（YouTube Data APIで該当なし）'
+    : '## YouTube: データなし'
 
-  // 検索で見つかったSNSプロフィール
+  // 検索で機械的に見つかったSNSプロフィール（参考情報としてClaudeに提示）
   const detectedProfiles = socialProfiles.filter(p =>
     ['x', 'instagram', 'facebook', 'tiktok', 'note', 'voicy', 'standfm', 'podcast'].includes(p.platform)
   )
 
   const profilesSection = detectedProfiles.length > 0
     ? `
-## 検索で見つかったSNSプロフィール
+## 検索で検出されたSNS URL（参考・要検証）
+以下は検索結果のURLから機械的に抽出したものです。著者本人のアカウントかどうかを検証してください。
 ${detectedProfiles.map(p => {
   const followers = p.estimatedFollowers
     ? `推定フォロワー${p.estimatedFollowers.toLocaleString()}人`
     : 'フォロワー数不明'
   return `- ${p.platform.toUpperCase()}: ${p.url}\n  ${followers}\n  ${p.snippet || ''}`
 }).join('\n')}`
-    : '## SNSプロフィール: URLの直接検出なし'
+    : '## SNS URL: 機械的な検出なし'
 
-  // Google検索の生データ（Claudeが追加情報を読み取る）
+  // Web検索の生データ（Claudeが読み取って判断する主要ソース）
   const rawResultsSection = rawSearchResults.length > 0
     ? `
-## Google検索の生データ（著者名 + SNSプラットフォーム名で検索した結果）
-以下の検索結果から、著者のSNSアカウント、フォロワー数、影響力に関する情報を読み取ってください。
+## Web検索の生データ（著者名 + SNSプラットフォーム名で検索した結果）
+以下の検索結果から、著者本人のSNSアカウント、フォロワー数、影響力に関する情報を読み取ってください。
 ${rawSearchResults.slice(0, 15).map((r, i) =>
   `${i + 1}. ${r.title}\n   URL: ${r.url}\n   ${r.snippet}`
 ).join('\n')}`
-    : '## Google検索: 結果なし'
+    : '## Web検索: 結果なし'
 
-  const prompt = `あなたは中古書店の仕入れ担当です。以下の新刊書籍について、著者のSNS影響力とエンゲージメントを分析し、販売見込みランクを判定してください。
+  const prompt = `あなたは中古書店の仕入れ担当です。以下の新刊書籍について、著者のSNS影響力を分析し、販売見込みランクを判定してください。
 
 ## 書籍情報
 - タイトル: ${book.title}
@@ -177,12 +98,21 @@ ${profilesSection}
 
 ${rawResultsSection}
 
-## 判定基準
+## あなたのタスク
+
+### 1. SNSアカウントの特定と本人確認
+検索結果とURL一覧から、著者**本人**のSNSアカウントを特定してください。
+- 同姓同名の別人のアカウントは絶対に含めないでください
+- 本人かどうかは、アカウント名・プロフィール内容・活動分野から判断してください
+- 本人と確信が持てないアカウントは含めないでください
+- 検索結果のスニペットからフォロワー数・登録者数を読み取ってください
+- YouTubeデータがAPI取得済みの場合、そのデータをそのまま採用してください
+
+### 2. ランク判定
 
 【高確率】以下のいずれかに該当:
 - SNS合計フォロワー10万人以上
 - YouTube登録者5万人以上かつエンゲージメント率が高い
-- 各プラットフォームのフォロワー合算が大きく、著書の販促に積極的と判断できる
 - ポッドキャスト（Voicy/Spotify/Apple等）で人気番組を持つ著者
 - テレビ出演など、SNS外でも著名な著者
 - 検索結果から著者が有名人・インフルエンサーであることが読み取れる場合
@@ -190,15 +120,12 @@ ${rawResultsSection}
 【中確率】以下のいずれかに該当:
 - SNS合計フォロワー1万〜10万人
 - YouTube登録者1万〜5万人
-- ポッドキャスト配信者で一定のリスナー基盤がある
 - 特定分野で影響力があるが、一般的な知名度は限定的
-- エンゲージメント率は高いが、規模は中程度
 
 【注目】以下のいずれかに該当:
 - SNS合計フォロワー3,000〜1万人
-- ポッドキャストや音声メディアで活動が確認できる
 - 最近急成長中のアカウント
-- 話題性の高いテーマ（トレンド・ニュースに関連）
+- 話題性の高いテーマ
 - フォロワー数は少ないがエンゲージメント率が非常に高い
 
 【null（判定不可）】:
@@ -206,35 +133,34 @@ ${rawResultsSection}
 - フォロワー数が判別できない
 - 判定に十分な情報がない
 
-## 重要
-- Google検索の生データから、フォロワー数・登録者数・リスナー数などの数値情報を積極的に読み取ってください
-- 検索結果のスニペットに含まれるSNSアカウントのURLや数値も判断材料にしてください
-- 著者名から著名人と判断できる場合は、あなたの知識も活用してください
-
-## SNSアカウントの本人確認（重要）
-- 検索で見つかったSNSアカウント（特にYouTube、Instagram、X、TikTok）が本当に著者本人のものかどうかを慎重に判断してください
-- 以下の場合は同姓同名の別人の可能性が高いため、そのアカウントのフォロワー数を判定に含めないでください：
-  - アカウントの表示名やプロフィール内容が著者（書籍の著者）と明らかに異なる人物を示している
-  - 検索スニペットの内容が著者の活動分野と無関係である
-  - 著者名が一般的な名前（例：田中太郎）で、アカウントが別人と思われる場合
-- 本人と確信が持てないSNSアカウントは、判定理由に「※本人未確認」と明記してください
-- 本人でないと判断したアカウントは完全に除外してください
-- YouTubeチャンネルについても同様に、チャンネル名や動画内容が著者の活動分野と無関係な場合は別人として除外してください
-
 ## 出力フォーマット（JSON で回答）
 {
   "rank": "高確率" | "中確率" | "注目" | null,
-  "reason": "判定理由を100文字以内で簡潔に記述",
+  "reason": "判定理由を150文字以内で記述。著者名の知名度やSNSフォロワー数の根拠を含める",
   "confidence": "high" | "medium" | "low",
-  "excludedProfiles": ["別人と判断したプラットフォーム名の配列（例: instagram）。なければ空配列"]
+  "snsAccounts": {
+    "x": { "url": "https://x.com/...", "followers": 12345 },
+    "instagram": { "url": "https://instagram.com/...", "followers": 51000 },
+    "tiktok": { "url": "https://tiktok.com/@...", "followers": 0 },
+    "facebook": { "url": "https://facebook.com/...", "followers": 0 },
+    "voicy": { "url": "https://voicy.jp/...", "followers": 0 },
+    "standfm": { "url": "https://stand.fm/...", "followers": 0 },
+    "podcast": { "url": "https://open.spotify.com/show/...", "followers": 0 },
+    "note": { "url": "https://note.com/...", "followers": 0 }
+  }
 }
+
+snsAccountsには著者本人と確認できたアカウントのみ含めてください。
+該当プラットフォームがなければそのキーは省略してください。
+フォロワー数が不明な場合は0としてください。
+YouTubeはsnsAccountsに含めないでください（API取得済みデータを使用するため）。
 
 JSONのみで回答してください。マークダウンのコードブロックは不要です。`
 
   try {
     const response = await client.messages.create({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 300,
+      max_tokens: 500,
       messages: [{ role: 'user', content: prompt }],
     })
 
@@ -248,39 +174,83 @@ JSONのみで回答してください。マークダウンのコードブロッ�
     const validRanks = ['高確率', '中確率', '注目', null]
     const rank = validRanks.includes(result.rank) ? result.rank : null
 
-    // Claudeが別人と判断したプロフィールをsnsDataから除外
-    const excluded: string[] = result.excludedProfiles || []
-    for (const platform of excluded) {
-      const key = platform.toLowerCase() as keyof SnsData
-      if (key in snsData) {
-        delete snsData[key]
+    // Claudeが特定したSNSアカウントからsnsDataを構築
+    const snsData: SnsData = {}
+
+    // YouTube: API取得済みデータを優先
+    if (youtube) {
+      snsData.youtube = {
+        subscribers: youtube.subscriberCount,
+        url: youtube.channelUrl,
       }
     }
 
-    const reasonSuffix = excluded.length > 0
-      ? ` [除外: ${excluded.join(', ')}(別人)]`
-      : ''
+    // Claude が特定した各プラットフォームのアカウント
+    const accounts = result.snsAccounts || {}
+    const platformKeys = ['x', 'instagram', 'facebook', 'tiktok', 'voicy', 'standfm', 'podcast', 'note'] as const
+
+    for (const key of platformKeys) {
+      const account = accounts[key]
+      if (account && account.url) {
+        if (key === 'podcast') {
+          snsData[key] = {
+            followers: account.followers || 0,
+            url: account.url,
+            platform: account.url.includes('spotify') ? 'Spotify' : 'Apple Podcasts',
+          }
+        } else {
+          snsData[key] = {
+            followers: account.followers || 0,
+            url: account.url,
+          }
+        }
+      }
+    }
 
     return {
       rank,
       snsData,
-      evaluationReason: (result.reason || '判定理由なし') + reasonSuffix,
+      evaluationReason: result.reason || '判定理由なし',
     }
   } catch (e) {
     // Claude API エラー時はフォールバック（ルールベース判定）
     const errorMsg = e instanceof Error ? e.message : String(e)
     console.error(`[ranker] Claude API error for "${book.title}": ${errorMsg}`)
-    const fallback = fallbackRanking(snsData, book)
+
+    // フォールバック用に機械的抽出のsnsDataを構築
+    const fallbackSnsData = buildFallbackSnsData(youtube, socialProfiles)
+    const fallback = fallbackRanking(fallbackSnsData, book)
     fallback.evaluationReason = `${fallback.evaluationReason} [Claude APIエラー: ${errorMsg.slice(0, 100)}]`
     return fallback
   }
+}
+
+/** フォールバック用: 機械的抽出からsnsDataを構築 */
+function buildFallbackSnsData(youtube: YouTubeChannelData | null, socialProfiles: SocialProfile[]): SnsData {
+  const snsData: SnsData = {}
+
+  if (youtube) {
+    snsData.youtube = { subscribers: youtube.subscriberCount, url: youtube.channelUrl }
+  }
+
+  for (const p of socialProfiles) {
+    if (p.platform === 'x') snsData.x = { followers: p.estimatedFollowers || 0, url: p.url }
+    else if (p.platform === 'instagram') snsData.instagram = { followers: p.estimatedFollowers || 0, url: p.url }
+    else if (p.platform === 'facebook') snsData.facebook = { followers: p.estimatedFollowers || 0, url: p.url }
+    else if (p.platform === 'tiktok') snsData.tiktok = { followers: p.estimatedFollowers || 0, url: p.url }
+    else if (p.platform === 'voicy') snsData.voicy = { followers: p.estimatedFollowers || 0, url: p.url }
+    else if (p.platform === 'standfm') snsData.standfm = { followers: p.estimatedFollowers || 0, url: p.url }
+    else if (p.platform === 'podcast') snsData.podcast = { followers: p.estimatedFollowers || 0, url: p.url, platform: p.url?.includes('spotify') ? 'Spotify' : 'Apple Podcasts' }
+    else if (p.platform === 'note') snsData.note = { followers: p.estimatedFollowers || 0, url: p.url }
+  }
+
+  return snsData
 }
 
 /**
  * Claude API がエラーの場合のフォールバック（ルールベース判定）
  */
 function fallbackRanking(snsData: SnsData, book: BookInfo): RankResult {
-  // 全プラットフォームのフォロワー合計
   let totalFollowers = 0
   if (snsData.youtube?.subscribers) totalFollowers += snsData.youtube.subscribers
   if (snsData.x?.followers) totalFollowers += snsData.x.followers
