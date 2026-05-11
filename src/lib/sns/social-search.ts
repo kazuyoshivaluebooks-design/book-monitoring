@@ -2,17 +2,16 @@
  * SNS検索API - 著者のSNSプロフィールを検索
  *
  * 対応する検索エンジン（優先順）:
- *   1. Brave Search API (BRAVE_SEARCH_API_KEY)
- *      - $5/1,000クエリ（毎月$5の無料クレジット付き）
- *      - site: オペレーターでSNSサイトに制限
+ *   1. Serper.dev (SERPER_API_KEY) ★推奨
+ *      - 通常のGoogle検索結果を返すAPI
+ *      - 無料枠: 2,500クエリ（クレカ不要）
+ *      - 1冊あたり1クエリで十分な結果が得られる
  *
- *   2. SearXNG 公開インスタンス（APIキー不要・無料）
- *      - 複数のインスタンスにフォールバック
- *      - site: オペレーターでSNSサイトに制限
- *      - SEARXNG_ENABLED=true で有効化
+ *   2. Brave Search API (BRAVE_SEARCH_API_KEY)
+ *      - $5/1,000クエリ（毎月$5の無料クレジット付き）
  *
  *   3. Google Custom Search API (GOOGLE_SEARCH_API_KEY + GOOGLE_SEARCH_CX)
- *      - ※ 2025年以降新規顧客への提供終了
+ *      - ※ 要API有効化
  *
  * ※ すべて未設定の場合はスキップして空配列を返す
  */
@@ -103,6 +102,83 @@ async function searchWithSearXNG(
   } catch {
     return []
   }
+}
+
+// ─────── Serper.dev (Google検索API) ───────
+
+async function searchWithSerper(
+  authorName: string,
+  apiKey: string
+): Promise<Array<{ title: string; link: string; snippet: string }>> {
+  const allItems: Array<{ title: string; link: string; snippet: string }> = []
+
+  // 中村さんの手動検索を再現: 「著者名 SNS」でGoogle検索
+  // Serperは通常のGoogle検索結果を返すので、1クエリで十分な結果が得られる
+  const queries = [
+    `"${authorName}" SNS Twitter YouTube Instagram`,
+  ]
+
+  for (const query of queries) {
+    try {
+      const res = await fetch('https://google.serper.dev/search', {
+        method: 'POST',
+        headers: {
+          'X-API-KEY': apiKey,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          q: query,
+          gl: 'jp',
+          hl: 'ja',
+          num: 20,
+        }),
+        signal: AbortSignal.timeout(5000),
+      })
+
+      if (res.status === 429) {
+        throw new QuotaExhaustedError('Serper.dev APIクォータ超過')
+      }
+
+      if (!res.ok) {
+        console.error(`[serper] HTTP ${res.status}: ${await res.text().catch(() => '')}`)
+        continue
+      }
+
+      const data = await res.json()
+      const organic = data.organic || []
+
+      // 重複URL排除
+      const existingUrls = new Set(allItems.map(item => item.link))
+      for (const item of organic) {
+        const link = item.link || ''
+        if (link && !existingUrls.has(link)) {
+          allItems.push({
+            title: item.title || '',
+            link,
+            snippet: item.snippet || '',
+          })
+          existingUrls.add(link)
+        }
+      }
+
+      // Knowledge Graph情報もあれば活用（著名人の場合に有用）
+      if (data.knowledgeGraph) {
+        const kg = data.knowledgeGraph
+        if (kg.description) {
+          allItems.push({
+            title: kg.title || authorName,
+            link: kg.website || '',
+            snippet: `${kg.description} ${kg.descriptionSource || ''}`.trim(),
+          })
+        }
+      }
+    } catch (e) {
+      if (e instanceof QuotaExhaustedError) throw e
+      console.error(`[serper] error: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  return allItems
 }
 
 // ─────── Brave Search API ───────
@@ -214,7 +290,7 @@ async function searchWithGoogle(
 
 /**
  * 著者のSNSプロフィールを検索
- * 優先順: Brave → SearXNG → Google CSE
+ * 優先順: Serper.dev → Brave → Google CSE
  */
 export async function searchSocialProfiles(
   authorName: string,
@@ -223,22 +299,26 @@ export async function searchSocialProfiles(
 ): Promise<{ profiles: SocialProfile[]; rawResults: SearchResultRaw[] }> {
   let allItems: Array<{ title: string; link: string; snippet: string }> = []
 
+  const serperApiKey = process.env.SERPER_API_KEY
   const braveApiKey = process.env.BRAVE_SEARCH_API_KEY
-  const searxngEnabled = process.env.SEARXNG_ENABLED === 'true' && process.env.SEARXNG_INSTANCE_URL
 
   // 優先順に試行し、結果が空ならフォールバック
-  // 1. Brave Search API（メイン）
-  if (braveApiKey) {
+  // 1. Serper.dev（Google検索API） ★推奨
+  if (serperApiKey) {
     try {
-      allItems = await searchWithBrave(authorName, braveApiKey)
+      allItems = await searchWithSerper(authorName, serperApiKey)
     } catch {
-      // Braveクォータ切れ・エラー時はフォールバック（スローしない）
+      // Serperクォータ切れ・エラー時はフォールバック
     }
   }
 
-  // 2. SearXNG セルフホスト（SEARXNG_ENABLED=true + SEARXNG_INSTANCE_URL設定時のみ）
-  if (allItems.length === 0 && searxngEnabled) {
-    allItems = await searchWithSearXNG(authorName)
+  // 2. Brave Search API
+  if (allItems.length === 0 && braveApiKey) {
+    try {
+      allItems = await searchWithBrave(authorName, braveApiKey)
+    } catch {
+      // Braveクォータ切れ・エラー時はフォールバック
+    }
   }
 
   // 3. Google CSE（最終フォールバック）
