@@ -78,12 +78,13 @@ export async function POST(request: NextRequest) {
     const body = await request.json().catch(() => ({}))
     const limit = Math.min(body.limit || 50, 100)
 
-    // 著者名が空の書籍 または [詳細取得中] の書籍を取得
+    // [詳細取得中] の書籍を優先的に取得（タイトル昇順で[が先頭に来る）
     const { data: booksNoAuthor, error } = await supabase
       .from('books')
       .select('id, isbn, title, author, publisher, evaluation_reason')
       .or('author.is.null,author.eq.,title.like.[詳細取得中]%')
       .not('isbn', 'is', null)
+      .order('title', { ascending: true })
       .limit(limit)
 
     if (error) {
