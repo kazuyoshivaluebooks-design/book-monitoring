@@ -117,17 +117,34 @@ export async function GET(request: NextRequest) {
       })
     }
 
-    // 実際に削除
+    // 実際に削除（limit パラメータで一度に削除する件数を制限可能）
+    const deleteLimitParam = searchParams.get('limit')
+    const deleteLimit = deleteLimitParam ? parseInt(deleteLimitParam, 10) : duplicateIds.length
+    const idsToDelete = duplicateIds.slice(0, deleteLimit)
+
     let deleted = 0
-    const BATCH = 50
-    for (let i = 0; i < duplicateIds.length; i += BATCH) {
-      const batch = duplicateIds.slice(i, i + BATCH)
+    const BATCH = 100
+    const deleteStart = Date.now()
+    for (let i = 0; i < idsToDelete.length; i += BATCH) {
+      // 8秒でタイムアウト（Vercel Hobby 10s制限）
+      if (Date.now() - deleteStart > 8000) {
+        return NextResponse.json({
+          totalBooks: allBooks.length,
+          duplicatesFound: duplicateIds.length,
+          duplicatesDeleted: deleted,
+          remaining: allBooks.length - deleted,
+          timedOut: true,
+          message: `8秒タイムアウト: ${deleted}件削除済み、残り${duplicateIds.length - deleted}件`,
+        })
+      }
+      const batch = idsToDelete.slice(i, i + BATCH)
       const { error } = await supabase.from('books').delete().in('id', batch)
       if (!error) deleted += batch.length
     }
 
     return NextResponse.json({
       totalBooks: allBooks.length,
+      duplicatesFound: duplicateIds.length,
       duplicatesDeleted: deleted,
       remaining: allBooks.length - deleted,
     })
