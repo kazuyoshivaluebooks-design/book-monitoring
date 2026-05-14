@@ -121,16 +121,30 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ ...results, message: 'Biblon: 新刊データなし' })
     }
 
-    // 2. 既存書籍のISBN/タイトルセットを構築
-    const { data: existingBooks } = await supabase
-      .from('books')
-      .select('id, isbn, title, author, release_date')
-
+    // 2. 既存書籍のISBN/タイトルセットを構築（ページネーション対応）
     const existingIsbns = new Map<string, { id: string; release_date: string | null }>()
     const existingTitles = new Set<string>()
-    for (const b of (existingBooks || [])) {
-      if (b.isbn) existingIsbns.set(b.isbn, { id: b.id, release_date: b.release_date })
-      existingTitles.add(`${b.title}|${b.author}`)
+    {
+      const PAGE = 1000
+      let from = 0
+      let hasMore = true
+      while (hasMore) {
+        if (Date.now() - startTime > 5000) break // 5秒で打ち切り
+        const { data: page, error: pageError } = await supabase
+          .from('books')
+          .select('id, isbn, title, author, release_date')
+          .range(from, from + PAGE - 1)
+        if (pageError || !page || page.length === 0) {
+          hasMore = false
+        } else {
+          for (const b of page) {
+            if (b.isbn) existingIsbns.set(b.isbn, { id: b.id, release_date: b.release_date })
+            existingTitles.add(`${b.title}|${b.author}`)
+          }
+          from += page.length
+          hasMore = page.length === PAGE
+        }
+      }
     }
 
     // 3. フィルタリング＋重複排除＋バッチ挿入リスト構築
