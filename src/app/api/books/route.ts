@@ -11,19 +11,126 @@ export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams
   const action = searchParams.get('action')
 
-  // === action=isbns: 登録済みISBN一覧 ===
+  // === action=isbns: 登録済みISBN一覧（ページネーション対応）===
   if (action === 'isbns') {
-    const { data, error } = await supabase
-      .from('books')
-      .select('isbn, title, author')
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
+    const allBooks: Array<{ isbn: string | null; title: string; author: string }> = []
+    const PAGE = 1000
+    let from = 0
+    let hasMore = true
+    while (hasMore) {
+      const { data: page, error: pageError } = await supabase
+        .from('books')
+        .select('isbn, title, author')
+        .range(from, from + PAGE - 1)
+      if (pageError) {
+        return NextResponse.json({ error: pageError.message }, { status: 500 })
+      }
+      if (page && page.length > 0) {
+        allBooks.push(...page)
+        from += page.length
+        hasMore = page.length === PAGE
+      } else {
+        hasMore = false
+      }
     }
-    const isbns = data
+    const isbns = allBooks
       .map((b) => b.isbn)
       .filter((isbn): isbn is string => isbn !== null)
-    const titles = data.map((b) => `${b.title}|${b.author}`)
-    return NextResponse.json({ isbns, titles, count: data.length })
+    const titles = allBooks.map((b) => `${b.title}|${b.author}`)
+    return NextResponse.json({ isbns, titles, count: allBooks.length })
+  }
+
+  // === action=dedup: 重複書籍を検出・削除 ===
+  if (action === 'dedup') {
+    const dryRun = searchParams.get('mode') === 'dry-run'
+
+    // 全書籍を取得（ページネーション）
+    const allBooks: Array<{ id: string; isbn: string | null; title: string; author: string; rank: string | null; discovered_at: string }> = []
+    const PAGE = 1000
+    let from = 0
+    let hasMore = true
+    while (hasMore) {
+      const { data: page, error: pageError } = await supabase
+        .from('books')
+        .select('id, isbn, title, author, rank, discovered_at')
+        .range(from, from + PAGE - 1)
+      if (pageError) {
+        return NextResponse.json({ error: pageError.message }, { status: 500 })
+      }
+      if (page && page.length > 0) {
+        allBooks.push(...page)
+        from += page.length
+        hasMore = page.length === PAGE
+      } else {
+        hasMore = false
+      }
+    }
+
+    const rankPriority: Record<string, number> = { '高確率': 3, '注目': 2, '中確率': 1 }
+    const duplicateIds: string[] = []
+
+    // ISBN重複の検出
+    const isbnMap = new Map<string, typeof allBooks[0]>()
+    for (const book of allBooks) {
+      if (!book.isbn) continue
+      if (isbnMap.has(book.isbn)) {
+        const existing = isbnMap.get(book.isbn)!
+        const existingRank = rankPriority[existing.rank || ''] || 0
+        const newRank = rankPriority[book.rank || ''] || 0
+        if (newRank > existingRank) {
+          duplicateIds.push(existing.id)
+          isbnMap.set(book.isbn, book)
+        } else {
+          duplicateIds.push(book.id)
+        }
+      } else {
+        isbnMap.set(book.isbn, book)
+      }
+    }
+
+    // タイトル+著者の重複検出（ISBNなし含む）
+    const titleMap = new Map<string, typeof allBooks[0]>()
+    for (const book of allBooks) {
+      if (duplicateIds.includes(book.id)) continue
+      const key = `${book.title}|${book.author}`
+      if (titleMap.has(key)) {
+        const existing = titleMap.get(key)!
+        const existingRank = rankPriority[existing.rank || ''] || 0
+        const newRank = rankPriority[book.rank || ''] || 0
+        if (newRank > existingRank) {
+          duplicateIds.push(existing.id)
+          titleMap.set(key, book)
+        } else {
+          duplicateIds.push(book.id)
+        }
+      } else {
+        titleMap.set(key, book)
+      }
+    }
+
+    if (dryRun) {
+      return NextResponse.json({
+        mode: 'dry-run',
+        totalBooks: allBooks.length,
+        duplicatesFound: duplicateIds.length,
+        afterCleanup: allBooks.length - duplicateIds.length,
+      })
+    }
+
+    // 実際に削除
+    let deleted = 0
+    const BATCH = 50
+    for (let i = 0; i < duplicateIds.length; i += BATCH) {
+      const batch = duplicateIds.slice(i, i + BATCH)
+      const { error } = await supabase.from('books').delete().in('id', batch)
+      if (!error) deleted += batch.length
+    }
+
+    return NextResponse.json({
+      totalBooks: allBooks.length,
+      duplicatesDeleted: deleted,
+      remaining: allBooks.length - deleted,
+    })
   }
 
   // === action=upsert: 書籍upsert ===

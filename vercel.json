@@ -5,10 +5,6 @@
       "schedule": "0 23 * * 0-4"
     },
     {
-      "path": "/api/cron/enrich?batch=20",
-      "schedule": "0 22 * * *"
-    },
-    {
       "path": "/api/sns/check?limit=3",
       "schedule": "0 20 * * *"
     }
