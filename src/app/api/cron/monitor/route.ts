@@ -66,10 +66,12 @@ function extractReleaseDate(book: BiblonBook): string | null {
 // メインの処理
 // ==============================
 export async function GET(request: NextRequest) {
-  const isDryRun = request.nextUrl.searchParams.get('mode') === 'dry-run'
+  const mode = request.nextUrl.searchParams.get('mode')
+  const isDryRun = mode === 'dry-run'
+  const isManualRun = mode === 'run-now'
 
-  // dry-run 以外は認証必須
-  if (!isDryRun) {
+  // dry-run / run-now 以外は認証必須
+  if (!isDryRun && !isManualRun) {
     const cronSecret = process.env.CRON_SECRET
     if (cronSecret) {
       const token = request.nextUrl.searchParams.get('token')
