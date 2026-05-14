@@ -88,7 +88,7 @@ export async function GET(request: NextRequest) {
     .not('author', 'is', null)
     .not('author', 'eq', '')
 
-  // 6. 今日の新着件数
+  // 6. 今日の新着件数（全体＋ランク別）
   const today = new Date().toISOString().split('T')[0]
   const { count: todayCount } = await supabase
     .from('books')
@@ -96,9 +96,21 @@ export async function GET(request: NextRequest) {
     .gte('discovered_at', `${today}T00:00:00`)
     .lt('discovered_at', `${today}T23:59:59.999`)
 
+  const todayRanks: Record<string, number> = {}
+  for (const rankVal of ['高確率', '注目', '中確率']) {
+    const { count: rc } = await supabase
+      .from('books')
+      .select('id', { count: 'exact', head: true })
+      .eq('rank', rankVal)
+      .gte('discovered_at', `${today}T00:00:00`)
+      .lt('discovered_at', `${today}T23:59:59.999`)
+    todayRanks[rankVal] = rc || 0
+  }
+
   return NextResponse.json({
     rankDistribution: rankCounts,
     todayNewBooks: todayCount || 0,
+    todayRankDistribution: todayRanks,
     searchQuality: {
       withHits: hitCount || 0,
       zeroResults: zeroCount || 0,

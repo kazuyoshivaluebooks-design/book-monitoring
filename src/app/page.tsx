@@ -219,11 +219,16 @@ function BookCard({
             {book.author}
             {book.publisher && <span className="text-gray-400"> / {book.publisher}</span>}
           </p>
-          {book.release_date && (
-            <span className="inline-block text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-600 mb-2">
-              📅 {book.release_date.replace(/-/g, '/')}
+          <div className="flex flex-wrap gap-1.5 mb-2">
+            {book.release_date && (
+              <span className="inline-block text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-600">
+                📅 {book.release_date.replace(/-/g, '/')}
+              </span>
+            )}
+            <span className="inline-block text-xs px-2 py-0.5 rounded bg-blue-50 text-blue-500">
+              {new Date(book.discovered_at).toLocaleDateString('ja-JP', { month: 'numeric', day: 'numeric' })}検出
             </span>
-          )}
+          </div>
         </div>
       </div>
 
@@ -319,6 +324,7 @@ export default function Dashboard() {
   // ランク別カウント（全データから算出、初回ロード時に取得）
   const [rankCounts, setRankCounts] = useState<Record<string, number>>({})
   const [todayNewBooks, setTodayNewBooks] = useState(0)
+  const [todayRanks, setTodayRanks] = useState<Record<string, number>>({})
   const [releaseFilter, setReleaseFilter] = useState('') // '' | 'upcoming'
 
   // 初回にランク別カウントを取得
@@ -330,6 +336,7 @@ export default function Dashboard() {
           const data = await res.json()
           setRankCounts(data.rankDistribution || {})
           setTodayNewBooks(data.todayNewBooks || 0)
+          setTodayRanks(data.todayRankDistribution || {})
         }
       } catch { /* ignore */ }
     })()
@@ -580,6 +587,15 @@ export default function Dashboard() {
                 {todayNewBooks > 0 && (
                   <span className="ml-2 px-2 py-0.5 bg-green-100 text-green-700 rounded-full font-medium">
                     本日 +{todayNewBooks}件
+                    {(todayRanks['高確率'] || todayRanks['注目'] || todayRanks['中確率']) ? (
+                      <span className="ml-1 text-green-600 font-normal">
+                        （{[
+                          todayRanks['高確率'] ? `高確率${todayRanks['高確率']}` : '',
+                          todayRanks['注目'] ? `注目${todayRanks['注目']}` : '',
+                          todayRanks['中確率'] ? `中確率${todayRanks['中確率']}` : '',
+                        ].filter(Boolean).join('・')}）
+                      </span>
+                    ) : null}
                   </span>
                 )}
               </p>
