@@ -88,8 +88,17 @@ export async function GET(request: NextRequest) {
     .not('author', 'is', null)
     .not('author', 'eq', '')
 
+  // 6. 今日の新着件数
+  const today = new Date().toISOString().split('T')[0]
+  const { count: todayCount } = await supabase
+    .from('books')
+    .select('id', { count: 'exact', head: true })
+    .gte('discovered_at', `${today}T00:00:00`)
+    .lt('discovered_at', `${today}T23:59:59.999`)
+
   return NextResponse.json({
     rankDistribution: rankCounts,
+    todayNewBooks: todayCount || 0,
     searchQuality: {
       withHits: hitCount || 0,
       zeroResults: zeroCount || 0,

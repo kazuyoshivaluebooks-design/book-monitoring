@@ -318,6 +318,8 @@ export default function Dashboard() {
 
   // ランク別カウント（全データから算出、初回ロード時に取得）
   const [rankCounts, setRankCounts] = useState<Record<string, number>>({})
+  const [todayNewBooks, setTodayNewBooks] = useState(0)
+  const [releaseFilter, setReleaseFilter] = useState('') // '' | 'upcoming'
 
   // 初回にランク別カウントを取得
   useEffect(() => {
@@ -327,6 +329,7 @@ export default function Dashboard() {
         if (res.ok) {
           const data = await res.json()
           setRankCounts(data.rankDistribution || {})
+          setTodayNewBooks(data.todayNewBooks || 0)
         }
       } catch { /* ignore */ }
     })()
@@ -337,6 +340,7 @@ export default function Dashboard() {
     const params = new URLSearchParams()
     if (search) params.set('search', search)
     if (filterStatus) params.set('status', filterStatus)
+    if (releaseFilter) params.set('release', releaseFilter)
 
     // タブに応じたランクフィルタ
     const tab = TABS.find(t => t.key === activeTab)
@@ -364,7 +368,7 @@ export default function Dashboard() {
     } finally {
       setLoading(false)
     }
-  }, [search, filterStatus, activeTab])
+  }, [search, filterStatus, activeTab, releaseFilter])
 
   useEffect(() => {
     fetchBooks()
@@ -571,7 +575,14 @@ export default function Dashboard() {
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-lg font-bold text-gray-900">新刊モニタリング</h1>
-              <p className="text-xs text-gray-500">著者SNS影響力による販売見込み判定 — ランク付き {totalRanked}件</p>
+              <p className="text-xs text-gray-500">
+                著者SNS影響力による販売見込み判定 — ランク付き {totalRanked}件
+                {todayNewBooks > 0 && (
+                  <span className="ml-2 px-2 py-0.5 bg-green-100 text-green-700 rounded-full font-medium">
+                    本日 +{todayNewBooks}件
+                  </span>
+                )}
+              </p>
             </div>
             <div className="flex items-center gap-3 text-xs">
               {snsRunning && (
@@ -659,6 +670,16 @@ export default function Dashboard() {
                 <option key={s} value={s}>{s}</option>
               ))}
             </select>
+            <button
+              onClick={() => setReleaseFilter(releaseFilter === 'upcoming' ? '' : 'upcoming')}
+              className={`px-3 py-1.5 text-sm border rounded-md transition-colors ${
+                releaseFilter === 'upcoming'
+                  ? 'bg-indigo-100 text-indigo-700 border-indigo-300 font-medium'
+                  : 'bg-white text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              発売前のみ
+            </button>
             <select
               value={sort1}
               onChange={(e) => setSort1(e.target.value)}

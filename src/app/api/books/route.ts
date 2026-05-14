@@ -214,6 +214,7 @@ export async function GET(request: NextRequest) {
   const rank = searchParams.get('rank') || ''
   const sort = searchParams.get('sort') || 'discovered_at'
   const order = searchParams.get('order') || 'desc'
+  const releaseFilter = searchParams.get('release') || '' // 'upcoming' = 発売前のみ
 
   // rank=ranked → 高確率・注目・中確率のいずれかが付いた書籍のみ
   const limitParam = searchParams.get('limit')
@@ -226,6 +227,20 @@ export async function GET(request: NextRequest) {
   // 「[詳細取得中]」の未補完書籍を除外（検索時は除外しない）
   if (!search) {
     query = query.not('title', 'like', '[詳細取得中]%')
+  }
+
+  // 発売後1ヶ月を過ぎた書籍を除外（検索時は除外しない）
+  if (!search) {
+    const oneMonthAgo = new Date()
+    oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1)
+    const cutoff = oneMonthAgo.toISOString().split('T')[0]
+    query = query.or(`release_date.gte.${cutoff},release_date.is.null`)
+  }
+
+  // 発売前のみフィルタ
+  if (releaseFilter === 'upcoming') {
+    const today = new Date().toISOString().split('T')[0]
+    query = query.gt('release_date', today)
   }
 
   if (search) {
