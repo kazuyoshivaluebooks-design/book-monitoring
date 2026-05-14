@@ -121,24 +121,23 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ ...results, message: 'Biblon: 新刊データなし' })
     }
 
-    // 2. 既存書籍のISBN/タイトルセットを構築（ページネーション対応）
-    const existingIsbns = new Map<string, { id: string; release_date: string | null }>()
+    // 2. 既存書籍のISBN/タイトルセットを構築（ISBNのみ軽量取得）
+    const existingIsbns = new Set<string>()
     const existingTitles = new Set<string>()
     {
       const PAGE = 1000
       let from = 0
       let hasMore = true
       while (hasMore) {
-        if (Date.now() - startTime > 5000) break // 5秒で打ち切り
         const { data: page, error: pageError } = await supabase
           .from('books')
-          .select('id, isbn, title, author, release_date')
+          .select('isbn, title, author')
           .range(from, from + PAGE - 1)
         if (pageError || !page || page.length === 0) {
           hasMore = false
         } else {
           for (const b of page) {
-            if (b.isbn) existingIsbns.set(b.isbn, { id: b.id, release_date: b.release_date })
+            if (b.isbn) existingIsbns.add(b.isbn)
             existingTitles.add(`${b.title}|${b.author}`)
           }
           from += page.length
@@ -201,7 +200,7 @@ export async function GET(request: NextRequest) {
       })
 
       existingTitles.add(`${book.title}|${book.author || ''}`)
-      existingIsbns.set(book.isbn, { id: '', release_date: null })
+      existingIsbns.add(book.isbn)
     }
 
     // dry-run: DB書き込みせず結果だけ返す
