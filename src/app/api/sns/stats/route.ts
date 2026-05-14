@@ -29,18 +29,23 @@ export async function GET(request: NextRequest) {
       })),
     })
   }
-  // 1. ランク別の分布（未補完書籍を除外）
-  const { data: rankDist } = await supabase
-    .from('books')
-    .select('rank')
-    .not('evaluation_reason', 'is', null)
-    .not('title', 'like', '[詳細取得中]%')
-
+  // 1. ランク別の分布（countクエリで正確にカウント）
   const rankCounts: Record<string, number> = {}
-  for (const row of rankDist || []) {
-    const r = row.rank || 'null'
-    rankCounts[r] = (rankCounts[r] || 0) + 1
+  for (const rankVal of ['高確率', '注目', '中確率']) {
+    const { count } = await supabase
+      .from('books')
+      .select('id', { count: 'exact', head: true })
+      .eq('rank', rankVal)
+      .not('title', 'like', '[詳細取得中]%')
+    rankCounts[rankVal] = count || 0
   }
+  // ランクなしの数
+  const { count: nullRankCount } = await supabase
+    .from('books')
+    .select('id', { count: 'exact', head: true })
+    .is('rank', null)
+    .not('title', 'like', '[詳細取得中]%')
+  rankCounts['null'] = nullRankCount || 0
 
   // 2. 検索ヒットありvs結果0件
   const { count: hitCount } = await supabase
