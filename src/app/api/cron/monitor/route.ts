@@ -98,39 +98,20 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    // 1. Biblon API で120日先までの新刊を取得
+    // 1 & 2. Biblon取得と既存ISBN取得を並列実行（10s制限対策）
     const today = new Date()
     const publishedFrom = toDateStr(today)
     const publishedTo = toDateStr(addDays(today, 120))
 
-    let biblonBooks: BiblonBook[] = []
-    try {
-      // Vercel Hobby 10s制限を考慮: Biblon取得に最大3秒、残りをDB処理に使う
-      biblonBooks = await fetchUpcomingBooks(publishedFrom, publishedTo, biblonApiKey, {
-        maxPages: 50,    // 最大5000件
-        timeoutMs: 3000, // 3秒で打ち切り
-      })
-    } catch (e) {
-      results.errors.push(`Biblon API エラー: ${e instanceof Error ? e.message : String(e)}`)
-      return NextResponse.json(results, { status: 500 })
-    }
-
-    results.biblonFetched = biblonBooks.length
-
-    if (biblonBooks.length === 0) {
-      return NextResponse.json({ ...results, message: 'Biblon: 新刊データなし' })
-    }
-
-    // 2. 既存ISBNセットを構築（ISBNのみ軽量取得、タイトル重複はdedup endpointに任せる）
-    const existingIsbns = new Set<string>()
-    {
+    // 既存ISBN取得関数
+    async function loadExistingIsbns(): Promise<Set<string>> {
+      const isbns = new Set<string>()
       const PAGE = 1000
       let from = 0
       let hasMore = true
       while (hasMore) {
-        if (Date.now() - startTime > 5000) {
-          // 5秒経過したら打ち切り（残りの処理に時間を残す）
-          results.errors.push(`既存チェック打ち切り: ${existingIsbns.size}件取得済み`)
+        if (Date.now() - startTime > 7000) {
+          results.errors.push(`既存チェック打ち切り: ${isbns.size}件取得済み`)
           break
         }
         const { data: page, error: pageError } = await supabase
@@ -142,12 +123,32 @@ export async function GET(request: NextRequest) {
           hasMore = false
         } else {
           for (const b of page) {
-            if (b.isbn) existingIsbns.add(b.isbn)
+            if (b.isbn) isbns.add(b.isbn)
           }
           from += page.length
           hasMore = page.length === PAGE
         }
       }
+      return isbns
+    }
+
+    // 並列実行
+    const [biblonResult, existingIsbns] = await Promise.all([
+      fetchUpcomingBooks(publishedFrom, publishedTo, biblonApiKey, {
+        maxPages: 50,
+        timeoutMs: 5000,
+      }).catch((e: Error) => {
+        results.errors.push(`Biblon API エラー: ${e.message}`)
+        return [] as BiblonBook[]
+      }),
+      loadExistingIsbns(),
+    ])
+
+    const biblonBooks = biblonResult
+    results.biblonFetched = biblonBooks.length
+
+    if (biblonBooks.length === 0) {
+      return NextResponse.json({ ...results, message: 'Biblon: 新刊データなし' })
     }
 
     // 3. フィルタリング＋重複排除＋バッチ挿入リスト構築
