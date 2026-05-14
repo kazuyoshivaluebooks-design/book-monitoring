@@ -105,10 +105,10 @@ export async function GET(request: NextRequest) {
 
     let biblonBooks: BiblonBook[] = []
     try {
-      // Vercel Hobby 10s制限を考慮: Biblon取得に最大4秒、残りをDB処理に使う
+      // Vercel Hobby 10s制限を考慮: Biblon取得に最大3秒、残りをDB処理に使う
       biblonBooks = await fetchUpcomingBooks(publishedFrom, publishedTo, biblonApiKey, {
         maxPages: 50,    // 最大5000件
-        timeoutMs: 4000, // 4秒で打ち切り
+        timeoutMs: 3000, // 3秒で打ち切り
       })
     } catch (e) {
       results.errors.push(`Biblon API エラー: ${e instanceof Error ? e.message : String(e)}`)
@@ -121,24 +121,28 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ ...results, message: 'Biblon: 新刊データなし' })
     }
 
-    // 2. 既存書籍のISBN/タイトルセットを構築（ISBNのみ軽量取得）
+    // 2. 既存ISBNセットを構築（ISBNのみ軽量取得、タイトル重複はdedup endpointに任せる）
     const existingIsbns = new Set<string>()
-    const existingTitles = new Set<string>()
     {
       const PAGE = 1000
       let from = 0
       let hasMore = true
       while (hasMore) {
+        if (Date.now() - startTime > 5000) {
+          // 5秒経過したら打ち切り（残りの処理に時間を残す）
+          results.errors.push(`既存チェック打ち切り: ${existingIsbns.size}件取得済み`)
+          break
+        }
         const { data: page, error: pageError } = await supabase
           .from('books')
-          .select('isbn, title, author')
+          .select('isbn')
+          .not('isbn', 'is', null)
           .range(from, from + PAGE - 1)
         if (pageError || !page || page.length === 0) {
           hasMore = false
         } else {
           for (const b of page) {
             if (b.isbn) existingIsbns.add(b.isbn)
-            existingTitles.add(`${b.title}|${b.author}`)
           }
           from += page.length
           hasMore = page.length === PAGE
@@ -171,12 +175,6 @@ export async function GET(request: NextRequest) {
         continue
       }
 
-      // タイトル+著者の重複チェック
-      if (book.title && existingTitles.has(`${book.title}|${book.author}`)) {
-        results.alreadyExists++
-        continue
-      }
-
       // ジャンルフィルタリング
       if (shouldExclude(book.title, book.cCode || null, null)) {
         results.filteredOut++
@@ -199,7 +197,6 @@ export async function GET(request: NextRequest) {
         source: `biblon (${book.source})`,
       })
 
-      existingTitles.add(`${book.title}|${book.author || ''}`)
       existingIsbns.add(book.isbn)
     }
 
