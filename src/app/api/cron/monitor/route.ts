@@ -66,12 +66,17 @@ function extractReleaseDate(book: BiblonBook): string | null {
 // メインの処理
 // ==============================
 export async function GET(request: NextRequest) {
-  const cronSecret = process.env.CRON_SECRET
-  if (cronSecret) {
-    const token = request.nextUrl.searchParams.get('token')
-    const authHeader = request.headers.get('authorization')
-    if (token !== cronSecret && authHeader !== `Bearer ${cronSecret}`) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const isDryRun = request.nextUrl.searchParams.get('mode') === 'dry-run'
+
+  // dry-run 以外は認証必須
+  if (!isDryRun) {
+    const cronSecret = process.env.CRON_SECRET
+    if (cronSecret) {
+      const token = request.nextUrl.searchParams.get('token')
+      const authHeader = request.headers.get('authorization')
+      if (token !== cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      }
     }
   }
 
@@ -181,6 +186,22 @@ export async function GET(request: NextRequest) {
 
       existingTitles.add(`${book.title}|${book.author || ''}`)
       existingIsbns.set(book.isbn, { id: '', release_date: null })
+    }
+
+    // dry-run: DB書き込みせず結果だけ返す
+    if (isDryRun) {
+      const elapsed = Date.now() - startTime
+      return NextResponse.json({
+        mode: 'dry-run',
+        ...results,
+        wouldInsert: batchInserts.length,
+        sampleBooks: batchInserts.slice(0, 10).map(b => ({
+          title: b.title, author: b.author, publisher: b.publisher,
+          isbn: b.isbn, release_date: b.release_date, source: b.source,
+        })),
+        elapsedMs: elapsed,
+        timestamp: new Date().toISOString(),
+      })
     }
 
     // 4. Supabase にバッチ挿入
