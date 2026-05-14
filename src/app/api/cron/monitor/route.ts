@@ -49,13 +49,13 @@ function addDays(d: Date, days: number): Date {
   return r
 }
 
-/** Biblon の year フィールドから release_date を推定 */
+/** Biblon の publishedDate フィールドから release_date を取得 */
 function extractReleaseDate(book: BiblonBook): string | null {
-  // Biblon は published_from/to で絞った結果を返すので、
-  // 個別の出版日は year フィールドのみ。
-  // ただし検索パラメータの日付範囲で取得しているので概ね正確。
-  // year が null でなければ YYYY-01-01 として保存。
-  // 実際にはBiblon内部で出版日が管理されており、sort=published_date で正しくソートされる。
+  // publishedDate: YYYY-MM-DD 形式の正確な出版日
+  if (book.publishedDate) {
+    return book.publishedDate
+  }
+  // フォールバック: year のみの場合
   if (book.year) {
     return `${book.year}-01-01`
   }
@@ -98,7 +98,11 @@ export async function GET(request: NextRequest) {
 
     let biblonBooks: BiblonBook[] = []
     try {
-      biblonBooks = await fetchUpcomingBooks(publishedFrom, publishedTo, biblonApiKey)
+      // Vercel Hobby 10s制限を考慮: Biblon取得に最大4秒、残りをDB処理に使う
+      biblonBooks = await fetchUpcomingBooks(publishedFrom, publishedTo, biblonApiKey, {
+        maxPages: 50,    // 最大5000件
+        timeoutMs: 4000, // 4秒で打ち切り
+      })
     } catch (e) {
       results.errors.push(`Biblon API エラー: ${e instanceof Error ? e.message : String(e)}`)
       return NextResponse.json(results, { status: 500 })

@@ -17,6 +17,7 @@ export type BiblonBook = {
   author: string
   publisher: string
   year: number | null
+  publishedDate: string | null  // YYYY-MM-DD 形式の正確な出版日
   pages: number | null
   price: number | null
   coverUrl: string
@@ -26,6 +27,14 @@ export type BiblonBook = {
   score: number
 }
 
+/** Biblon API のページネーション付きレスポンス */
+type BiblonSearchResponse = {
+  results: BiblonBook[]
+  total: number
+  offset: number
+  limit: number
+}
+
 /**
  * Biblon API で書籍を検索
  */
@@ -33,7 +42,7 @@ async function biblonFetch(
   endpoint: string,
   apiKey: string,
   signal?: AbortSignal
-): Promise<BiblonBook[]> {
+): Promise<BiblonSearchResponse> {
   const res = await fetch(`${BIBLON_BASE_URL}${endpoint}`, {
     headers: {
       'Authorization': `Bearer ${apiKey}`,
@@ -61,14 +70,22 @@ async function biblonFetch(
 export async function fetchUpcomingBooks(
   publishedFrom: string,
   publishedTo: string,
-  apiKey: string
+  apiKey: string,
+  options?: { maxPages?: number; timeoutMs?: number }
 ): Promise<BiblonBook[]> {
   const allBooks: BiblonBook[] = []
   const PAGE_SIZE = 100
   let offset = 0
   const MAX_OFFSET = 9900 // offset + limit ≤ 10000
+  const maxPages = options?.maxPages || 100
+  const startTime = Date.now()
+  const timeoutMs = options?.timeoutMs || 30000
+  let pageCount = 0
 
-  while (offset <= MAX_OFFSET) {
+  while (offset <= MAX_OFFSET && pageCount < maxPages) {
+    // タイムアウトチェック
+    if (Date.now() - startTime > timeoutMs) break
+
     const params = new URLSearchParams({
       published_from: publishedFrom,
       published_to: publishedTo,
@@ -77,16 +94,17 @@ export async function fetchUpcomingBooks(
       offset: String(offset),
     })
 
-    const books = await biblonFetch(
+    const response = await biblonFetch(
       `/api/books/search?${params}`,
       apiKey,
-      AbortSignal.timeout(10000)
+      AbortSignal.timeout(8000)
     )
 
-    allBooks.push(...books)
+    allBooks.push(...response.results)
+    pageCount++
 
     // 取得件数がPAGE_SIZE未満なら最後のページ
-    if (books.length < PAGE_SIZE) break
+    if (response.results.length < PAGE_SIZE) break
     offset += PAGE_SIZE
   }
 
@@ -101,12 +119,12 @@ export async function fetchBookByIsbn(
   apiKey: string
 ): Promise<BiblonBook | null> {
   try {
-    const books = await biblonFetch(
+    const response = await biblonFetch(
       `/api/books/search?q=${isbn}`,
       apiKey,
       AbortSignal.timeout(5000)
     )
-    return books.find(b => b.isbn === isbn) || books[0] || null
+    return response.results.find(b => b.isbn === isbn) || response.results[0] || null
   } catch {
     return null
   }
