@@ -34,6 +34,9 @@ export type Book = {
   sns_data: SnsData
   evaluation_reason: string | null
   source: string | null
+  description: string | null
+  cover_url: string | null
+  pages: number | null
   discovered_at: string
   created_at: string
   updated_at: string
