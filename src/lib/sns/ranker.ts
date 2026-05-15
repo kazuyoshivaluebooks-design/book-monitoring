@@ -141,14 +141,32 @@ ${rawResultsSection}
 - フォロワー数が判別できない
 - 判定に十分な情報がない
 
+## よくある判定ミスの例（必ず避けてください）
+
+❌ 誤: 「累計100万部のベストセラー作家」→ SNSフォロワー100万人と誤認 → 高確率
+✅ 正: 書籍売上とSNSフォロワーは別物。SNSアカウントが見つからなければnull
+
+❌ 誤: 検索結果に「Twitter」「YouTube」という単語があるだけでSNSアクティブと判断
+✅ 正: 実際のアカウントURLとフォロワー数が確認できなければカウントしない
+
+❌ 誤: 同姓同名の別人（例: 一般的な名前の著者）のSNSアカウントを誤帰属
+✅ 正: プロフィール内容・活動分野が書籍のジャンルと一致するか確認
+
+❌ 誤: 出版社やメディアのアカウントを著者本人のアカウントとして計上
+✅ 正: 出版社・書店・メディアのアカウントは除外
+
+❌ 誤: フォロワー数の根拠を示さずに「影響力がある」と判定
+✅ 正: 必ず具体的な数値（フォロワーXX人、登録者XX人）を根拠に含める
+
 ## 出力フォーマット（JSON で回答）
 {
   "rank": "高確率" | "中確率" | "注目" | null,
-  "reason": "判定理由を150文字以内で記述。著者名の知名度やSNSフォロワー数の根拠を含める",
+  "reason": "判定理由を200文字以内で記述。必ず具体的なフォロワー数・登録者数の根拠を含める。数値が確認できない場合はその旨を明記",
   "confidence": "high" | "medium" | "low",
   "snsAccounts": {
     "x": { "url": "https://x.com/...", "followers": 12345 },
     "instagram": { "url": "https://instagram.com/...", "followers": 51000 },
+    "youtube": { "url": "https://youtube.com/@...", "subscribers": 80000 },
     "tiktok": { "url": "https://tiktok.com/@...", "followers": 0 },
     "facebook": { "url": "https://facebook.com/...", "followers": 0 },
     "voicy": { "url": "https://voicy.jp/...", "followers": 0 },
@@ -161,14 +179,14 @@ ${rawResultsSection}
 snsAccountsには著者本人と確認できたアカウントのみ含めてください。
 該当プラットフォームがなければそのキーは省略してください。
 フォロワー数が不明な場合は0としてください。
-YouTubeはsnsAccountsに含めないでください（API取得済みデータを使用するため）。
+YouTubeについて: API取得済みデータがある場合はそのデータが優先されます。検索結果からYouTubeチャンネルを発見した場合はsnsAccountsのyoutubeキーにURL・登録者数を含めてください（API取得済みデータで上書きされる場合があります）。
 
 JSONのみで回答してください。マークダウンのコードブロックは不要です。`
 
   try {
     const response = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 500,
+      model: 'claude-sonnet-4-5-20250514',
+      max_tokens: 1024,
       messages: [{ role: 'user', content: prompt }],
     })
 
@@ -180,16 +198,27 @@ JSONのみで回答してください。マークダウンのコードブロッ�
     const cleaned = text.trim().replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '')
     const result = JSON.parse(cleaned)
     const validRanks = ['高確率', '中確率', '注目', null]
-    const rank = validRanks.includes(result.rank) ? result.rank : null
+    let rank = validRanks.includes(result.rank) ? result.rank : null
+
+    // confidence: "low" の場合、高確率・中確率は信頼できないのでダウングレード
+    if (result.confidence === 'low' && (rank === '高確率' || rank === '中確率')) {
+      rank = '注目'  // 低確信度の高ランクは「注目」に下げる
+    }
 
     // Claudeが特定したSNSアカウントからsnsDataを構築
     const snsData: SnsData = {}
 
-    // YouTube: API取得済みデータを優先
+    // YouTube: API取得済みデータを最優先、なければClaudeの検出結果を使用
     if (youtube) {
       snsData.youtube = {
         subscribers: youtube.subscriberCount,
         url: youtube.channelUrl,
+      }
+    } else if (result.snsAccounts?.youtube?.url) {
+      // ClaudeがWeb検索結果からYouTubeチャンネルを発見した場合（APIデータなし）
+      snsData.youtube = {
+        subscribers: result.snsAccounts.youtube.subscribers || result.snsAccounts.youtube.followers || 0,
+        url: result.snsAccounts.youtube.url,
       }
     }
 
