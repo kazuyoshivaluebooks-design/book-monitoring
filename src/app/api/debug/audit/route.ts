@@ -116,8 +116,8 @@ export async function GET(request: NextRequest) {
     },
     // ランク付き書籍（精度確認の主対象）
     rankedBooks: ranked.map(formatBook),
-    // 調査済みだがランクなし（上位10件）
-    investigatedNoRank: investigated.filter(b => !b.rank).slice(0, 15).map(formatBook),
+    // 調査済みだがランクなし（全件）
+    investigatedNoRank: investigated.filter(b => !b.rank).map(formatBook),
     // 機関名スキップ（全件、正しくスキップされているか確認）
     skippedInstitutional: skippedInstitutional.map(b => ({
       title: b.title,
@@ -129,12 +129,13 @@ export async function GET(request: NextRequest) {
       title: b.title,
       author: b.author,
     })),
-    // 結果0件（上位15件）
-    skippedNoResult: skippedNoResult.slice(0, 15).map(formatBook),
-    // 未調査
-    pending: pending.slice(0, 10).map(b => ({
+    // 結果0件（全件）
+    skippedNoResult: skippedNoResult.map(formatBook),
+    // 未調査（全件）
+    pending: pending.map(b => ({
       title: b.title,
       author: b.author,
+      publisher: b.publisher,
     })),
   })
 }
