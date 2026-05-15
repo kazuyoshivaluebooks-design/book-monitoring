@@ -316,7 +316,6 @@ export async function searchSocialProfiles(
 
   const serperApiKey = process.env.SERPER_API_KEY
   const braveApiKey = process.env.BRAVE_SEARCH_API_KEY
-  let allQuotaExhausted = false
   let lastQuotaError: QuotaExhaustedError | null = null
 
   // 優先順に試行し、結果が空ならフォールバック
@@ -357,7 +356,6 @@ export async function searchSocialProfiles(
 
   // 全API枯渇: 結果0件のまま保存されることを防ぐためエラーを投げる
   if (allItems.length === 0 && lastQuotaError) {
-    allQuotaExhausted = true
     throw new QuotaExhaustedError(
       `全検索APIのクレジットが枯渇しています。Serper/Brave/Google CSEのいずれも使用できません。`
     )

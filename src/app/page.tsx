@@ -709,6 +709,7 @@ export default function Dashboard() {
 
       {/* 本日の処理状況パネル */}
       {statsData && (
+        <>
         {/* API健全性アラート */}
         {statsData?.apiHealth && Object.values(statsData.apiHealth).some(v => v.status === 'error') && (
           <div className="bg-red-50 border-b border-red-200">
@@ -803,6 +804,7 @@ export default function Dashboard() {
             </div>
           </div>
         </div>
+        </>
       )}
 
       {/* タブ */}
