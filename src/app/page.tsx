@@ -372,6 +372,7 @@ export default function Dashboard() {
   const [statsData, setStatsData] = useState<{
     totalBooks: number
     todayChecked: number
+    todayCheckedRanks: Record<string, number>
     pending: number
     rerankPending: number
     searchQuality: { withHits: number; zeroResults: number; skipped: number; hitRate: string }
@@ -391,6 +392,7 @@ export default function Dashboard() {
           setStatsData({
             totalBooks: data.totalBooks || 0,
             todayChecked: data.todayChecked || 0,
+            todayCheckedRanks: data.todayCheckedRanks || {},
             pending: data.pending || 0,
             rerankPending: data.rerankPending || 0,
             searchQuality: data.searchQuality || { withHits: 0, zeroResults: 0, skipped: 0, hitRate: 'N/A' },
@@ -702,13 +704,7 @@ export default function Dashboard() {
                 <div className="text-xs text-gray-500 mb-1">本日の新着</div>
                 <div className="text-xl font-bold text-green-600">+{todayNewBooks}</div>
                 <div className="text-xs text-gray-400 mt-0.5">
-                  {todayNewBooks > 0 && (
-                    [
-                      todayRanks['高確率'] ? `高${todayRanks['高確率']}` : '',
-                      todayRanks['中確率'] ? `中${todayRanks['中確率']}` : '',
-                      todayRanks['注目'] ? `注${todayRanks['注目']}` : '',
-                    ].filter(Boolean).join(' / ') || 'ランク付けなし'
-                  )}
+                  {todayNewBooks > 0 ? 'cron検出' : 'cron未実行 or 新刊なし'}
                 </div>
               </div>
               {/* 本日の調査完了 */}
@@ -716,7 +712,15 @@ export default function Dashboard() {
                 <div className="text-xs text-gray-500 mb-1">本日の調査完了</div>
                 <div className="text-xl font-bold text-blue-600">{statsData.todayChecked}</div>
                 <div className="text-xs text-gray-400 mt-0.5">
-                  検索ヒット率 {statsData.searchQuality.hitRate}
+                  {(() => {
+                    const cr = statsData.todayCheckedRanks
+                    const parts = [
+                      cr['高確率'] ? `高${cr['高確率']}` : '',
+                      cr['中確率'] ? `中${cr['中確率']}` : '',
+                      cr['注目'] ? `注${cr['注目']}` : '',
+                    ].filter(Boolean)
+                    return parts.length > 0 ? parts.join(' / ') : 'ランク付きなし'
+                  })()}
                 </div>
               </div>
               {/* 未調査 */}

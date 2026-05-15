@@ -115,6 +115,19 @@ export async function GET(request: NextRequest) {
     .not('evaluation_reason', 'is', null)
     .not('evaluation_reason', 'eq', '自動検出 - SNS調査待ち')
 
+  // 7b. 今日の調査完了分のランク別内訳
+  const todayCheckedRanks: Record<string, number> = {}
+  for (const rankVal of ['高確率', '注目', '中確率']) {
+    const { count: rc } = await supabase
+      .from('books')
+      .select('id', { count: 'exact', head: true })
+      .eq('rank', rankVal)
+      .gte('updated_at', `${today}T00:00:00`)
+      .not('evaluation_reason', 'is', null)
+      .not('evaluation_reason', 'eq', '自動検出 - SNS調査待ち')
+    todayCheckedRanks[rankVal] = rc || 0
+  }
+
   // 8. 全書籍数
   const { count: totalBooks } = await supabase
     .from('books')
@@ -161,6 +174,7 @@ export async function GET(request: NextRequest) {
     todayNewBooks: todayCount || 0,
     todayChecked: todayCheckedCount || 0,
     todayRankDistribution: todayRanks,
+    todayCheckedRanks,
     dailyStats,
     searchQuality: {
       withHits: hitCount || 0,
