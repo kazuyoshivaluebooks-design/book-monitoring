@@ -175,7 +175,7 @@ export async function POST(request: NextRequest) {
   // 1. 「結果0件」の書籍を取得
   const { data: books, error } = await supabase
     .from('books')
-    .select('id, title, author, publisher, isbn, price, release_date, evaluation_reason')
+    .select('id, title, author, publisher, isbn, price, release_date, evaluation_reason, description')
     .or('evaluation_reason.ilike.%結果0件%,evaluation_reason.ilike.%結果 0件%')
     .not('evaluation_reason', 'ilike', '%ヒットなし%')
     .not('evaluation_reason', 'ilike', '%検索ヒット%')
@@ -259,6 +259,7 @@ export async function POST(request: NextRequest) {
           isbn: repBook.isbn,
           price: repBook.price,
           releaseDate: repBook.release_date,
+          description: repBook.description,
         },
         youtube,
         socialProfiles,

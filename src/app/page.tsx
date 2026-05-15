@@ -113,24 +113,54 @@ function SnsInfo({ snsData }: { snsData: SnsData }) {
   )
 }
 
-function BookCover({ isbn }: { isbn: string | null }) {
+function BookCover({ isbn, coverUrl }: { isbn: string | null; coverUrl: string | null }) {
   const [status, setStatus] = useState<'loading' | 'ok' | 'none'>('loading')
+  const [imgSrc, setImgSrc] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!isbn) { setStatus('none'); return }
+    // Biblon cover_url を優先、なければ openBD にフォールバック
+    const src = coverUrl || (isbn ? `https://cover.openbd.jp/${isbn}.jpg` : null)
+    if (!src) { setStatus('none'); return }
+
     let cancelled = false
     const img = new Image()
     img.onload = () => {
       if (cancelled) return
-      setStatus(img.naturalWidth < 10 ? 'none' : 'ok')
+      if (img.naturalWidth < 10) {
+        // Biblon画像が小さい場合、openBDをフォールバック
+        if (coverUrl && isbn) {
+          const fallback = `https://cover.openbd.jp/${isbn}.jpg`
+          const img2 = new Image()
+          img2.onload = () => { if (!cancelled) { setImgSrc(fallback); setStatus('ok') } }
+          img2.onerror = () => { if (!cancelled) setStatus('none') }
+          img2.src = fallback
+        } else {
+          setStatus('none')
+        }
+      } else {
+        setImgSrc(src)
+        setStatus('ok')
+      }
     }
-    img.onerror = () => { if (!cancelled) setStatus('none') }
-    img.src = `https://cover.openbd.jp/${isbn}.jpg`
-    const timer = setTimeout(() => { if (!cancelled) setStatus('none') }, 5000)
+    img.onerror = () => {
+      if (cancelled) return
+      // coverUrl失敗時、openBDフォールバック
+      if (coverUrl && isbn) {
+        const fallback = `https://cover.openbd.jp/${isbn}.jpg`
+        const img2 = new Image()
+        img2.onload = () => { if (!cancelled) { setImgSrc(fallback); setStatus(img2.naturalWidth < 10 ? 'none' : 'ok') } }
+        img2.onerror = () => { if (!cancelled) setStatus('none') }
+        img2.src = fallback
+      } else {
+        setStatus('none')
+      }
+    }
+    img.src = src
+    const timer = setTimeout(() => { if (!cancelled && status === 'loading') setStatus('none') }, 5000)
     return () => { cancelled = true; clearTimeout(timer) }
-  }, [isbn])
+  }, [isbn, coverUrl])
 
-  if (!isbn || status === 'none') {
+  if (status === 'none') {
     return (
       <div className="w-16 h-22 flex-shrink-0 rounded bg-gray-100 flex items-center justify-center">
         <span className="text-gray-300 text-2xl">📖</span>
@@ -142,7 +172,7 @@ function BookCover({ isbn }: { isbn: string | null }) {
   }
   return (
     <img
-      src={`https://cover.openbd.jp/${isbn}.jpg`}
+      src={imgSrc || ''}
       alt=""
       className="w-16 h-auto max-h-24 flex-shrink-0 rounded shadow-sm object-cover"
     />
@@ -192,7 +222,7 @@ function BookCard({
       </div>
 
       <div className="flex gap-3">
-        <BookCover isbn={book.isbn} />
+        <BookCover isbn={book.isbn} coverUrl={book.cover_url} />
         <div className="flex-1 min-w-0">
           <div className="flex items-start gap-1 mb-1">
             {book.isbn ? (
@@ -228,6 +258,11 @@ function BookCard({
             <span className="inline-block text-xs px-2 py-0.5 rounded bg-blue-50 text-blue-500">
               {new Date(book.discovered_at).toLocaleDateString('ja-JP', { month: 'numeric', day: 'numeric' })}検出
             </span>
+            {book.pages && (
+              <span className="inline-block text-xs px-2 py-0.5 rounded bg-gray-50 text-gray-500">
+                {book.pages}p
+              </span>
+            )}
           </div>
         </div>
       </div>
@@ -260,6 +295,9 @@ function BookCard({
             {book.genre && (
               <div><span className="text-gray-400">ジャンル:</span> {book.genre}</div>
             )}
+            {book.pages && (
+              <div><span className="text-gray-400">ページ数:</span> {book.pages}p</div>
+            )}
             {book.source && (
               <div><span className="text-gray-400">ソース:</span> {book.source}</div>
             )}
@@ -268,6 +306,11 @@ function BookCard({
               {new Date(book.discovered_at).toLocaleDateString('ja-JP')}
             </div>
           </div>
+          {book.description && (
+            <div className="mt-2 p-2 bg-gray-50 rounded text-xs text-gray-700 leading-relaxed">
+              <span className="font-bold text-gray-500">内容紹介:</span> {book.description.length > 200 ? book.description.slice(0, 200) + '…' : book.description}
+            </div>
+          )}
           <div className="flex justify-end pt-1">
             {!confirmDelete ? (
               <button

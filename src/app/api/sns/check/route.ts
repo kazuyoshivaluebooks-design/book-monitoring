@@ -142,6 +142,7 @@ async function checkSingleBook(bookId: string): Promise<{
       isbn: book.isbn,
       price: book.price,
       releaseDate: book.release_date,
+      description: book.description,
     },
     youtube,
     socialProfiles,

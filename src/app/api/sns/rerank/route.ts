@@ -50,7 +50,7 @@ export async function GET(request: NextRequest) {
     // ルールベース判定された書籍を取得
     const { data: books, error: fetchError } = await supabase
       .from('books')
-      .select('id, title, author, publisher, isbn, price, release_date, sns_data, evaluation_reason')
+      .select('id, title, author, publisher, isbn, price, release_date, sns_data, evaluation_reason, description')
       .like('evaluation_reason', '%ルールベース判定%')
       .order('release_date', { ascending: true, nullsFirst: false })
       .limit(limit)
@@ -105,6 +105,7 @@ export async function GET(request: NextRequest) {
             isbn: book.isbn,
             price: book.price,
             releaseDate: book.release_date,
+            description: book.description,
           },
           youtube,
           socialProfiles,

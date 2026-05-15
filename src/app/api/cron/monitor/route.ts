@@ -158,6 +158,7 @@ export async function GET(request: NextRequest) {
       c_code: string | null; genre: string | null;
       rank: null; status: string; sns_data: Record<string, never>;
       evaluation_reason: string; source: string;
+      description: string | null; cover_url: string | null; pages: number | null;
     }> = []
 
     const seenIsbns = new Set<string>()
@@ -196,6 +197,9 @@ export async function GET(request: NextRequest) {
         sns_data: {},
         evaluation_reason: '自動検出 - SNS調査待ち',
         source: `biblon (${book.source})`,
+        description: book.description || null,
+        cover_url: book.coverUrl || null,
+        pages: book.pages || null,
       })
 
       existingIsbns.add(book.isbn)

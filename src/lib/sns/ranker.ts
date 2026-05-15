@@ -26,6 +26,7 @@ type BookInfo = {
   isbn: string | null
   price: number | null
   releaseDate: string | null
+  description: string | null
 }
 
 /**
@@ -91,6 +92,7 @@ ${rawSearchResults.slice(0, 15).map((r, i) =>
 - ISBN: ${book.isbn || '不明'}
 - 価格: ${book.price ? `${book.price}円` : '不明'}
 - 発売日: ${book.releaseDate || '不明'}
+${book.description ? `- 内容紹介: ${book.description.slice(0, 300)}` : ''}
 
 ${youtubeSection}
 
