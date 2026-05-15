@@ -122,11 +122,9 @@ async function searchWithSerper(
     `"${authorName}" SNS OR Twitter OR YouTube OR Instagram OR フォロワー`,
   ]
 
-  for (let i = 0; i < queries.length; i++) {
-    // 2つ目以降のクエリは少し待つ（レート制限対策）
-    if (i > 0) await new Promise(r => setTimeout(r, 200))
-
-    try {
+  // 3クエリを並列実行して高速化（Vercel 10秒制限対策）
+  const fetchResults = await Promise.allSettled(
+    queries.map(async (q) => {
       const res = await fetch('https://google.serper.dev/search', {
         method: 'POST',
         headers: {
@@ -134,12 +132,12 @@ async function searchWithSerper(
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          q: queries[i],
+          q,
           gl: 'jp',
           hl: 'ja',
           num: 10,
         }),
-        signal: AbortSignal.timeout(5000),
+        signal: AbortSignal.timeout(4000),
       })
 
       // クレジット不足・クォータ超過はフォールバック対象
@@ -152,44 +150,52 @@ async function searchWithSerper(
 
       if (!res.ok) {
         console.error(`[serper] HTTP ${res.status}: ${await res.text().catch(() => '')}`)
-        continue
+        return null
       }
 
-      const data = await res.json()
-      const organic = data.organic || []
+      return await res.json()
+    })
+  )
 
-      // 重複URL排除
-      const existingUrls = new Set(allItems.map(item => item.link))
-      for (const item of organic) {
-        const link = item.link || ''
-        if (link && !existingUrls.has(link)) {
+  // 結果をマージ（QuotaExhaustedErrorは再throw）
+  for (const result of fetchResults) {
+    if (result.status === 'rejected') {
+      if (result.reason instanceof QuotaExhaustedError) {
+        throw result.reason
+      }
+      continue
+    }
+    const data = result.value
+    if (!data) continue
+
+    const organic = data.organic || []
+    const existingUrls = new Set(allItems.map(item => item.link))
+    for (const item of organic) {
+      const link = item.link || ''
+      if (link && !existingUrls.has(link)) {
+        allItems.push({
+          title: item.title || '',
+          link,
+          snippet: item.snippet || '',
+        })
+        existingUrls.add(link)
+      }
+    }
+
+    // Knowledge Graph情報もあれば活用（著名人の場合に有用）
+    if (data.knowledgeGraph) {
+      const kg = data.knowledgeGraph
+      if (kg.description) {
+        const kgLink = kg.website || ''
+        const existingUrlsNow = new Set(allItems.map(item => item.link))
+        if (!kgLink || !existingUrlsNow.has(kgLink)) {
           allItems.push({
-            title: item.title || '',
-            link,
-            snippet: item.snippet || '',
+            title: kg.title || authorName,
+            link: kgLink,
+            snippet: `${kg.description} ${kg.descriptionSource || ''}`.trim(),
           })
-          existingUrls.add(link)
         }
       }
-
-      // Knowledge Graph情報もあれば活用（著名人の場合に有用）
-      if (data.knowledgeGraph) {
-        const kg = data.knowledgeGraph
-        if (kg.description) {
-          const kgLink = kg.website || ''
-          const existingUrlsNow = new Set(allItems.map(item => item.link))
-          if (!kgLink || !existingUrlsNow.has(kgLink)) {
-            allItems.push({
-              title: kg.title || authorName,
-              link: kgLink,
-              snippet: `${kg.description} ${kg.descriptionSource || ''}`.trim(),
-            })
-          }
-        }
-      }
-    } catch (e) {
-      if (e instanceof QuotaExhaustedError) throw e
-      console.error(`[serper] error: ${e instanceof Error ? e.message : String(e)}`)
     }
   }
 
