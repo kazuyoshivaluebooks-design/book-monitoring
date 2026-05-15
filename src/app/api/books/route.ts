@@ -229,8 +229,9 @@ export async function GET(request: NextRequest) {
     query = query.not('title', 'like', '[詳細取得中]%')
   }
 
-  // 発売後1ヶ月を過ぎた書籍を除外（検索時は除外しない）
-  if (!search) {
+  // 発売後1ヶ月を過ぎた書籍を除外（検索時・本日調査モード時は除外しない）
+  const checkedToday = searchParams.get('checked_today')
+  if (!search && checkedToday !== '1') {
     const oneMonthAgo = new Date()
     oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1)
     const cutoff = oneMonthAgo.toISOString().split('T')[0]
@@ -241,6 +242,15 @@ export async function GET(request: NextRequest) {
   if (releaseFilter === 'upcoming') {
     const today = new Date().toISOString().split('T')[0]
     query = query.gt('release_date', today)
+  }
+
+  // 本日調査完了フィルタ
+  if (checkedToday === '1') {
+    const today = new Date().toISOString().split('T')[0]
+    query = query
+      .gte('updated_at', `${today}T00:00:00`)
+      .not('evaluation_reason', 'is', null)
+      .not('evaluation_reason', 'eq', '自動検出 - SNS調査待ち')
   }
 
   if (search) {

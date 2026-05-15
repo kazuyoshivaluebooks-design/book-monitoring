@@ -369,6 +369,7 @@ export default function Dashboard() {
   const [todayNewBooks, setTodayNewBooks] = useState(0)
   const [todayRanks, setTodayRanks] = useState<Record<string, number>>({})
   const [releaseFilter, setReleaseFilter] = useState('') // '' | 'upcoming'
+  const [checkedTodayFilter, setCheckedTodayFilter] = useState(false)
   const [statsData, setStatsData] = useState<{
     totalBooks: number
     todayChecked: number
@@ -410,19 +411,26 @@ export default function Dashboard() {
     if (filterStatus) params.set('status', filterStatus)
     if (releaseFilter) params.set('release', releaseFilter)
 
-    // タブに応じたランクフィルタ
-    const tab = TABS.find(t => t.key === activeTab)
-    if (tab && tab.rankFilter) {
-      params.set('rank', tab.rankFilter)
-    }
-
-    // ランク付きタブの場合はランク順、全書籍は発見日順
-    if (activeTab === 'all') {
-      params.set('sort', 'discovered_at')
+    if (checkedTodayFilter) {
+      // 「本日の調査完了」モード：updated_at降順で取得、クライアント側でランクソート
+      params.set('checked_today', '1')
+      params.set('sort', 'updated_at')
       params.set('order', 'desc')
     } else {
-      params.set('sort', 'release_date')
-      params.set('order', 'asc')
+      // タブに応じたランクフィルタ
+      const tab = TABS.find(t => t.key === activeTab)
+      if (tab && tab.rankFilter) {
+        params.set('rank', tab.rankFilter)
+      }
+
+      // ランク付きタブの場合はランク順、全書籍は発見日順
+      if (activeTab === 'all') {
+        params.set('sort', 'discovered_at')
+        params.set('order', 'desc')
+      } else {
+        params.set('sort', 'release_date')
+        params.set('order', 'asc')
+      }
     }
 
     try {
@@ -436,14 +444,22 @@ export default function Dashboard() {
     } finally {
       setLoading(false)
     }
-  }, [search, filterStatus, activeTab, releaseFilter])
+  }, [search, filterStatus, activeTab, releaseFilter, checkedTodayFilter])
 
   useEffect(() => {
     fetchBooks()
   }, [fetchBooks])
 
   // クライアント側ソート（2段階）
+  // checkedTodayモード時はランク優先で固定
   const sortedBooks = (() => {
+    if (checkedTodayFilter) {
+      return [...books].sort((a, b) => {
+        const cmp = compareByField(a, b, 'rank', 'asc')
+        if (cmp !== 0) return cmp
+        return compareByField(a, b, 'title', 'asc')
+      })
+    }
     const [f1, o1] = sort1.split(':') as [SortKey, SortDir]
     const [f2, o2] = sort2.split(':') as [SortKey, SortDir]
     return [...books].sort((a, b) => {
@@ -708,8 +724,19 @@ export default function Dashboard() {
                 </div>
               </div>
               {/* 本日の調査完了 */}
-              <div className="bg-white rounded-lg p-3 shadow-sm border">
-                <div className="text-xs text-gray-500 mb-1">本日の調査完了</div>
+              <div
+                className={`bg-white rounded-lg p-3 shadow-sm border cursor-pointer transition-all hover:shadow-md ${
+                  checkedTodayFilter ? 'ring-2 ring-blue-400 bg-blue-50' : ''
+                }`}
+                onClick={() => {
+                  setCheckedTodayFilter(!checkedTodayFilter)
+                }}
+                title="クリックで本日の調査結果をランク順に表示"
+              >
+                <div className="text-xs text-gray-500 mb-1">
+                  本日の調査完了
+                  {checkedTodayFilter && <span className="ml-1 text-blue-500 font-medium">（表示中）</span>}
+                </div>
                 <div className="text-xl font-bold text-blue-600">{statsData.todayChecked}</div>
                 <div className="text-xs text-gray-400 mt-0.5">
                   {(() => {
@@ -769,11 +796,11 @@ export default function Dashboard() {
               const count = tab.key === 'all'
                 ? Object.values(rankCounts).reduce((a, b) => a + b, 0)
                 : (rankCounts[tab.rankFilter] || 0)
-              const isActive = activeTab === tab.key
+              const isActive = !checkedTodayFilter && activeTab === tab.key
               return (
                 <button
                   key={tab.key}
-                  onClick={() => setActiveTab(tab.key)}
+                  onClick={() => { setActiveTab(tab.key); setCheckedTodayFilter(false) }}
                   className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
                     isActive
                       ? `border-${tab.color}-500 text-${tab.color}-700 bg-${tab.color}-50`
