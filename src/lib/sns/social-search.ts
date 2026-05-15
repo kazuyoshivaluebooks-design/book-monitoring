@@ -142,8 +142,12 @@ async function searchWithSerper(
         signal: AbortSignal.timeout(5000),
       })
 
-      if (res.status === 429) {
-        throw new QuotaExhaustedError('Serper.dev APIクォータ超過')
+      // クレジット不足・クォータ超過はフォールバック対象
+      if (res.status === 429 || res.status === 400 || res.status === 402 || res.status === 403) {
+        const text = await res.text().catch(() => '')
+        if (text.includes('Not enough credits') || text.includes('quota') || res.status === 429 || res.status === 402) {
+          throw new QuotaExhaustedError(`Serper.dev APIクレジット不足 (HTTP ${res.status})`)
+        }
       }
 
       if (!res.ok) {
