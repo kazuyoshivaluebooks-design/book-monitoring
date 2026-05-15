@@ -112,14 +112,20 @@ async function searchWithSerper(
 ): Promise<Array<{ title: string; link: string; snippet: string }>> {
   const allItems: Array<{ title: string; link: string; snippet: string }> = []
 
-  // 中村さんの手動検索を再現: 「著者名 SNS」でGoogle検索
-  // Serperは通常のGoogle検索結果を返すので、1クエリで十分な結果が得られる
-  // 全対象プラットフォーム: YouTube, X(Twitter), Instagram, Facebook, TikTok, Podcast
+  // 3クエリ戦略（1著者あたり3 Serperクレジット消費）:
+  //   Q1: SNSプロフィール直接発見（site:指定 → X, Instagram, note等のプロフィールに直接ヒット）
+  //   Q2: YouTube/TikTok/Podcast発見（動画・音声プラットフォーム）
+  //   Q3: 補完検索（site:制限なし → インタビュー記事、まとめ記事等からSNS情報を発見）
   const queries = [
-    `"${authorName}" SNS YouTube Twitter Instagram Facebook TikTok Podcast`,
+    `"${authorName}" (site:x.com OR site:twitter.com OR site:instagram.com OR site:note.com OR site:facebook.com)`,
+    `"${authorName}" (site:youtube.com OR site:tiktok.com OR site:voicy.jp OR site:stand.fm OR site:podcasts.apple.com OR site:open.spotify.com)`,
+    `"${authorName}" SNS OR Twitter OR YouTube OR Instagram OR フォロワー`,
   ]
 
-  for (const query of queries) {
+  for (let i = 0; i < queries.length; i++) {
+    // 2つ目以降のクエリは少し待つ（レート制限対策）
+    if (i > 0) await new Promise(r => setTimeout(r, 200))
+
     try {
       const res = await fetch('https://google.serper.dev/search', {
         method: 'POST',
@@ -128,10 +134,10 @@ async function searchWithSerper(
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          q: query,
+          q: queries[i],
           gl: 'jp',
           hl: 'ja',
-          num: 20,
+          num: 10,
         }),
         signal: AbortSignal.timeout(5000),
       })
@@ -166,11 +172,15 @@ async function searchWithSerper(
       if (data.knowledgeGraph) {
         const kg = data.knowledgeGraph
         if (kg.description) {
-          allItems.push({
-            title: kg.title || authorName,
-            link: kg.website || '',
-            snippet: `${kg.description} ${kg.descriptionSource || ''}`.trim(),
-          })
+          const kgLink = kg.website || ''
+          const existingUrlsNow = new Set(allItems.map(item => item.link))
+          if (!kgLink || !existingUrlsNow.has(kgLink)) {
+            allItems.push({
+              title: kg.title || authorName,
+              link: kgLink,
+              snippet: `${kg.description} ${kg.descriptionSource || ''}`.trim(),
+            })
+          }
         }
       }
     } catch (e) {
