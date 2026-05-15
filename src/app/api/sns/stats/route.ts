@@ -107,10 +107,61 @@ export async function GET(request: NextRequest) {
     todayRanks[rankVal] = rc || 0
   }
 
+  // 7. 今日SNS調査が完了した件数（updated_atが今日 & evaluation_reasonがnullでない）
+  const { count: todayCheckedCount } = await supabase
+    .from('books')
+    .select('id', { count: 'exact', head: true })
+    .gte('updated_at', `${today}T00:00:00`)
+    .not('evaluation_reason', 'is', null)
+    .not('evaluation_reason', 'eq', '自動検出 - SNS調査待ち')
+
+  // 8. 全書籍数
+  const { count: totalBooks } = await supabase
+    .from('books')
+    .select('id', { count: 'exact', head: true })
+    .not('title', 'like', '[詳細取得中]%')
+
+  // 9. 過去7日間の日別新着数
+  const dailyStats: Array<{ date: string; newBooks: number; checked: number }> = []
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date()
+    d.setDate(d.getDate() - i)
+    const dateStr = d.toISOString().split('T')[0]
+
+    const { count: dayNew } = await supabase
+      .from('books')
+      .select('id', { count: 'exact', head: true })
+      .gte('discovered_at', `${dateStr}T00:00:00`)
+      .lt('discovered_at', `${dateStr}T23:59:59.999`)
+
+    const { count: dayChecked } = await supabase
+      .from('books')
+      .select('id', { count: 'exact', head: true })
+      .gte('updated_at', `${dateStr}T00:00:00`)
+      .lt('updated_at', `${dateStr}T23:59:59.999`)
+      .not('evaluation_reason', 'is', null)
+      .not('evaluation_reason', 'eq', '自動検出 - SNS調査待ち')
+
+    dailyStats.push({
+      date: dateStr,
+      newBooks: dayNew || 0,
+      checked: dayChecked || 0,
+    })
+  }
+
+  // 10. ルールベース判定残数（rerankの対象）
+  const { count: rerankPending } = await supabase
+    .from('books')
+    .select('id', { count: 'exact', head: true })
+    .like('evaluation_reason', '%ルールベース判定%')
+
   return NextResponse.json({
     rankDistribution: rankCounts,
+    totalBooks: totalBooks || 0,
     todayNewBooks: todayCount || 0,
+    todayChecked: todayCheckedCount || 0,
     todayRankDistribution: todayRanks,
+    dailyStats,
     searchQuality: {
       withHits: hitCount || 0,
       zeroResults: zeroCount || 0,
@@ -120,6 +171,7 @@ export async function GET(request: NextRequest) {
         : 'N/A',
     },
     pending: pendingCount || 0,
+    rerankPending: rerankPending || 0,
     topRankedBooks: (topBooks || []).map(b => ({
       title: b.title,
       author: b.author,

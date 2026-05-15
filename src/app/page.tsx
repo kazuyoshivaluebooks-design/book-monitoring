@@ -369,6 +369,14 @@ export default function Dashboard() {
   const [todayNewBooks, setTodayNewBooks] = useState(0)
   const [todayRanks, setTodayRanks] = useState<Record<string, number>>({})
   const [releaseFilter, setReleaseFilter] = useState('') // '' | 'upcoming'
+  const [statsData, setStatsData] = useState<{
+    totalBooks: number
+    todayChecked: number
+    pending: number
+    rerankPending: number
+    searchQuality: { withHits: number; zeroResults: number; skipped: number; hitRate: string }
+    dailyStats: Array<{ date: string; newBooks: number; checked: number }>
+  } | null>(null)
 
   // 初回にランク別カウントを取得
   useEffect(() => {
@@ -380,6 +388,14 @@ export default function Dashboard() {
           setRankCounts(data.rankDistribution || {})
           setTodayNewBooks(data.todayNewBooks || 0)
           setTodayRanks(data.todayRankDistribution || {})
+          setStatsData({
+            totalBooks: data.totalBooks || 0,
+            todayChecked: data.todayChecked || 0,
+            pending: data.pending || 0,
+            rerankPending: data.rerankPending || 0,
+            searchQuality: data.searchQuality || { withHits: 0, zeroResults: 0, skipped: 0, hitRate: 'N/A' },
+            dailyStats: data.dailyStats || [],
+          })
         }
       } catch { /* ignore */ }
     })()
@@ -670,6 +686,76 @@ export default function Dashboard() {
           </div>
         </div>
       </header>
+
+      {/* 本日の処理状況パネル */}
+      {statsData && (
+        <div className="bg-gradient-to-r from-slate-50 to-blue-50 border-b">
+          <div className="max-w-6xl mx-auto px-4 py-3">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              {/* 全体 */}
+              <div className="bg-white rounded-lg p-3 shadow-sm border">
+                <div className="text-xs text-gray-500 mb-1">総登録数</div>
+                <div className="text-xl font-bold text-gray-900">{statsData.totalBooks.toLocaleString()}</div>
+              </div>
+              {/* 本日の新着 */}
+              <div className="bg-white rounded-lg p-3 shadow-sm border">
+                <div className="text-xs text-gray-500 mb-1">本日の新着</div>
+                <div className="text-xl font-bold text-green-600">+{todayNewBooks}</div>
+                <div className="text-xs text-gray-400 mt-0.5">
+                  {todayNewBooks > 0 && (
+                    [
+                      todayRanks['高確率'] ? `高${todayRanks['高確率']}` : '',
+                      todayRanks['中確率'] ? `中${todayRanks['中確率']}` : '',
+                      todayRanks['注目'] ? `注${todayRanks['注目']}` : '',
+                    ].filter(Boolean).join(' / ') || 'ランク付けなし'
+                  )}
+                </div>
+              </div>
+              {/* 本日の調査完了 */}
+              <div className="bg-white rounded-lg p-3 shadow-sm border">
+                <div className="text-xs text-gray-500 mb-1">本日の調査完了</div>
+                <div className="text-xl font-bold text-blue-600">{statsData.todayChecked}</div>
+                <div className="text-xs text-gray-400 mt-0.5">
+                  検索ヒット率 {statsData.searchQuality.hitRate}
+                </div>
+              </div>
+              {/* 未調査 */}
+              <div className={`bg-white rounded-lg p-3 shadow-sm border ${statsData.pending > 0 ? 'ring-1 ring-amber-200' : ''}`}>
+                <div className="text-xs text-gray-500 mb-1">未調査（残り）</div>
+                <div className={`text-xl font-bold ${statsData.pending > 0 ? 'text-amber-600' : 'text-green-600'}`}>
+                  {statsData.pending > 0 ? statsData.pending : '0'}
+                </div>
+                <div className="text-xs text-gray-400 mt-0.5">
+                  {statsData.pending === 0 ? '全件チェック済み' : '自動調査中...'}
+                </div>
+              </div>
+              {/* 7日間ミニグラフ */}
+              <div className="bg-white rounded-lg p-3 shadow-sm border">
+                <div className="text-xs text-gray-500 mb-1">過去7日間の新着</div>
+                <div className="flex items-end gap-0.5 h-8">
+                  {statsData.dailyStats.map((d, i) => {
+                    const max = Math.max(...statsData.dailyStats.map(s => s.newBooks), 1)
+                    const h = Math.max((d.newBooks / max) * 100, 4)
+                    const isToday = i === statsData.dailyStats.length - 1
+                    return (
+                      <div key={d.date} className="flex-1 flex flex-col items-center gap-0.5" title={`${d.date}: 新着${d.newBooks}件 / 調査${d.checked}件`}>
+                        <div
+                          className={`w-full rounded-sm ${isToday ? 'bg-green-500' : 'bg-blue-300'}`}
+                          style={{ height: `${h}%` }}
+                        />
+                      </div>
+                    )
+                  })}
+                </div>
+                <div className="flex justify-between text-[10px] text-gray-300 mt-0.5">
+                  <span>{statsData.dailyStats[0]?.date.slice(5)}</span>
+                  <span>今日</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* タブ */}
       <div className="bg-white border-b">
