@@ -229,8 +229,8 @@ async function searchWithBrave(
         signal: AbortSignal.timeout(4000),
       })
 
-      if (res.status === 429) {
-        throw new QuotaExhaustedError('Brave Search APIクォータ超過')
+      if (res.status === 429 || res.status === 402) {
+        throw new QuotaExhaustedError(`Brave Search APIクレジット不足 (HTTP ${res.status})`)
       }
 
       if (res.status === 401 || res.status === 403) {
@@ -316,14 +316,19 @@ export async function searchSocialProfiles(
 
   const serperApiKey = process.env.SERPER_API_KEY
   const braveApiKey = process.env.BRAVE_SEARCH_API_KEY
+  let allQuotaExhausted = false
+  let lastQuotaError: QuotaExhaustedError | null = null
 
   // 優先順に試行し、結果が空ならフォールバック
   // 1. Serper.dev（Google検索API） ★推奨
   if (serperApiKey) {
     try {
       allItems = await searchWithSerper(authorName, serperApiKey)
-    } catch {
-      // Serperクォータ切れ・エラー時はフォールバック
+    } catch (e) {
+      if (e instanceof QuotaExhaustedError) {
+        lastQuotaError = e
+        console.warn(`[search] Serperクレジット不足、Braveにフォールバック: ${e.message}`)
+      }
     }
   }
 
@@ -331,14 +336,31 @@ export async function searchSocialProfiles(
   if (allItems.length === 0 && braveApiKey) {
     try {
       allItems = await searchWithBrave(authorName, braveApiKey)
-    } catch {
-      // Braveクォータ切れ・エラー時はフォールバック
+    } catch (e) {
+      if (e instanceof QuotaExhaustedError) {
+        lastQuotaError = e
+        console.warn(`[search] Braveクレジット不足: ${e.message}`)
+      }
     }
   }
 
   // 3. Google CSE（最終フォールバック）
   if (allItems.length === 0 && apiKey && cx) {
-    allItems = await searchWithGoogle(authorName, apiKey, cx)
+    try {
+      allItems = await searchWithGoogle(authorName, apiKey, cx)
+    } catch (e) {
+      if (e instanceof QuotaExhaustedError) {
+        lastQuotaError = e
+      }
+    }
+  }
+
+  // 全API枯渇: 結果0件のまま保存されることを防ぐためエラーを投げる
+  if (allItems.length === 0 && lastQuotaError) {
+    allQuotaExhausted = true
+    throw new QuotaExhaustedError(
+      `全検索APIのクレジットが枯渇しています。Serper/Brave/Google CSEのいずれも使用できません。`
+    )
   }
 
   // 検索結果からプラットフォーム別プロフィールを抽出

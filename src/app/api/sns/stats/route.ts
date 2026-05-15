@@ -168,6 +168,53 @@ export async function GET(request: NextRequest) {
     .select('id', { count: 'exact', head: true })
     .like('evaluation_reason', '%ルールベース判定%')
 
+  // 11. 検索APIの健全性チェック（クレジット枯渇の早期検知）
+  const apiHealth: Record<string, { status: string; detail?: string }> = {}
+
+  // Serperチェック（軽量: 1クレジット消費）
+  const serperKey = process.env.SERPER_API_KEY
+  if (serperKey) {
+    try {
+      const res = await fetch('https://google.serper.dev/search', {
+        method: 'POST',
+        headers: { 'X-API-KEY': serperKey, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ q: 'test', num: 1 }),
+        signal: AbortSignal.timeout(3000),
+      })
+      if (res.ok) {
+        apiHealth.serper = { status: 'ok' }
+      } else {
+        const text = await res.text().catch(() => '')
+        apiHealth.serper = { status: 'error', detail: `HTTP ${res.status}: ${text.slice(0, 100)}` }
+      }
+    } catch (e) {
+      apiHealth.serper = { status: 'error', detail: e instanceof Error ? e.message : String(e) }
+    }
+  } else {
+    apiHealth.serper = { status: 'not_configured' }
+  }
+
+  // Braveチェック
+  const braveKey = process.env.BRAVE_SEARCH_API_KEY
+  if (braveKey) {
+    try {
+      const res = await fetch(`https://api.search.brave.com/res/v1/web/search?q=test&count=1`, {
+        headers: { 'Accept': 'application/json', 'X-Subscription-Token': braveKey },
+        signal: AbortSignal.timeout(3000),
+      })
+      if (res.ok) {
+        apiHealth.brave = { status: 'ok' }
+      } else {
+        const text = await res.text().catch(() => '')
+        apiHealth.brave = { status: 'error', detail: `HTTP ${res.status}: ${text.slice(0, 100)}` }
+      }
+    } catch (e) {
+      apiHealth.brave = { status: 'error', detail: e instanceof Error ? e.message : String(e) }
+    }
+  } else {
+    apiHealth.brave = { status: 'not_configured' }
+  }
+
   return NextResponse.json({
     rankDistribution: rankCounts,
     totalBooks: totalBooks || 0,
@@ -198,5 +245,6 @@ export async function GET(request: NextRequest) {
       rank: b.rank,
       reason: (b.evaluation_reason || '').slice(0, 120),
     })),
+    apiHealth,
   })
 }

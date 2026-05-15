@@ -378,6 +378,7 @@ export default function Dashboard() {
     rerankPending: number
     searchQuality: { withHits: number; zeroResults: number; skipped: number; hitRate: string }
     dailyStats: Array<{ date: string; newBooks: number; checked: number }>
+    apiHealth?: Record<string, { status: string; detail?: string }>
   } | null>(null)
 
   // 初回にランク別カウントを取得
@@ -398,6 +399,7 @@ export default function Dashboard() {
             rerankPending: data.rerankPending || 0,
             searchQuality: data.searchQuality || { withHits: 0, zeroResults: 0, skipped: 0, hitRate: 'N/A' },
             dailyStats: data.dailyStats || [],
+            apiHealth: data.apiHealth || undefined,
           })
         }
       } catch { /* ignore */ }
@@ -707,6 +709,21 @@ export default function Dashboard() {
 
       {/* 本日の処理状況パネル */}
       {statsData && (
+        {/* API健全性アラート */}
+        {statsData?.apiHealth && Object.values(statsData.apiHealth).some(v => v.status === 'error') && (
+          <div className="bg-red-50 border-b border-red-200">
+            <div className="max-w-6xl mx-auto px-4 py-2 flex items-center gap-2">
+              <span className="text-red-600 font-bold text-sm">&#9888; 検索APIクレジット枯渇</span>
+              <span className="text-red-500 text-xs">
+                {Object.entries(statsData.apiHealth)
+                  .filter(([, v]) => v.status === 'error')
+                  .map(([k]) => k.charAt(0).toUpperCase() + k.slice(1))
+                  .join(', ')}
+                が使用不可 &#8212; SNS調査の結果が正確ではありません。APIキーの更新が必要です。
+              </span>
+            </div>
+          </div>
+        )}
         <div className="bg-gradient-to-r from-slate-50 to-blue-50 border-b">
           <div className="max-w-6xl mx-auto px-4 py-3">
             <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
