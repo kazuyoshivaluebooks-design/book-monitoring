@@ -171,18 +171,22 @@ export async function GET(request: NextRequest) {
   // 11. 検索APIの健全性チェック（クレジット枯渇の早期検知）
   const apiHealth: Record<string, { status: string; detail?: string }> = {}
 
-  // Serperチェック（軽量: 1クレジット消費）
+  // Serperチェック（アカウント情報APIでクレジット残高を確認、検索クレジットを消費しない）
   const serperKey = process.env.SERPER_API_KEY
   if (serperKey) {
     try {
-      const res = await fetch('https://google.serper.dev/search', {
-        method: 'POST',
-        headers: { 'X-API-KEY': serperKey, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ q: 'test', num: 1 }),
+      const res = await fetch('https://google.serper.dev/account', {
+        method: 'GET',
+        headers: { 'X-API-KEY': serperKey },
         signal: AbortSignal.timeout(3000),
       })
       if (res.ok) {
-        apiHealth.serper = { status: 'ok' }
+        const account = await res.json()
+        const credits = account.credits ?? null
+        apiHealth.serper = {
+          status: credits !== null && credits <= 0 ? 'error' : 'ok',
+          detail: credits !== null ? `残クレジット: ${credits}` : undefined,
+        }
       } else {
         const text = await res.text().catch(() => '')
         apiHealth.serper = { status: 'error', detail: `HTTP ${res.status}: ${text.slice(0, 100)}` }
@@ -194,7 +198,7 @@ export async function GET(request: NextRequest) {
     apiHealth.serper = { status: 'not_configured' }
   }
 
-  // Braveチェック
+  // Braveチェック（フォールバック用 — 月額$5制限あり、402はwarning扱い）
   const braveKey = process.env.BRAVE_SEARCH_API_KEY
   if (braveKey) {
     try {
@@ -204,6 +208,9 @@ export async function GET(request: NextRequest) {
       })
       if (res.ok) {
         apiHealth.brave = { status: 'ok' }
+      } else if (res.status === 402 || res.status === 429) {
+        // 月額上限到達は想定内 — warningとして表示
+        apiHealth.brave = { status: 'warning', detail: `月額クォータ上限（HTTP ${res.status}）` }
       } else {
         const text = await res.text().catch(() => '')
         apiHealth.brave = { status: 'error', detail: `HTTP ${res.status}: ${text.slice(0, 100)}` }

@@ -711,20 +711,37 @@ export default function Dashboard() {
       {statsData && (
         <>
         {/* API健全性アラート */}
-        {statsData?.apiHealth && Object.values(statsData.apiHealth).some(v => v.status === 'error') && (
-          <div className="bg-red-50 border-b border-red-200">
-            <div className="max-w-6xl mx-auto px-4 py-2 flex items-center gap-2">
-              <span className="text-red-600 font-bold text-sm">&#9888; 検索APIクレジット枯渇</span>
-              <span className="text-red-500 text-xs">
-                {Object.entries(statsData.apiHealth)
-                  .filter(([, v]) => v.status === 'error')
-                  .map(([k]) => k.charAt(0).toUpperCase() + k.slice(1))
-                  .join(', ')}
-                が使用不可 &#8212; SNS調査の結果が正確ではありません。APIキーの更新が必要です。
-              </span>
-            </div>
-          </div>
-        )}
+        {statsData?.apiHealth && (() => {
+          const errors = Object.entries(statsData.apiHealth).filter(([, v]) => v.status === 'error')
+          const warnings = Object.entries(statsData.apiHealth).filter(([, v]) => v.status === 'warning')
+          const serperOk = statsData.apiHealth.serper?.status === 'ok'
+          return (
+            <>
+              {errors.length > 0 && (
+                <div className="bg-red-50 border-b border-red-200">
+                  <div className="max-w-6xl mx-auto px-4 py-2 flex items-center gap-2">
+                    <span className="text-red-600 font-bold text-sm">&#9888; 検索API障害</span>
+                    <span className="text-red-500 text-xs">
+                      {errors.map(([k, v]) => `${k.charAt(0).toUpperCase() + k.slice(1)}${v.detail ? ` (${v.detail})` : ''}`).join(', ')}
+                      {!serperOk ? ' — SNS調査が停止しています。APIキーの更新が必要です。' : ''}
+                    </span>
+                  </div>
+                </div>
+              )}
+              {warnings.length > 0 && errors.length === 0 && (
+                <div className="bg-yellow-50 border-b border-yellow-200">
+                  <div className="max-w-6xl mx-auto px-4 py-2 flex items-center gap-2">
+                    <span className="text-yellow-600 font-medium text-sm">&#9432; フォールバックAPI制限中</span>
+                    <span className="text-yellow-600 text-xs">
+                      {warnings.map(([k, v]) => `${k.charAt(0).toUpperCase() + k.slice(1)}: ${v.detail || '制限中'}`).join(', ')}
+                      {serperOk ? ' — メイン検索(Serper)は正常稼働中' : ''}
+                    </span>
+                  </div>
+                </div>
+              )}
+            </>
+          )
+        })()}
         <div className="bg-gradient-to-r from-slate-50 to-blue-50 border-b">
           <div className="max-w-6xl mx-auto px-4 py-3">
             <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
