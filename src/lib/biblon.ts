@@ -74,7 +74,7 @@ export async function fetchUpcomingBooks(
   options?: { maxPages?: number; timeoutMs?: number }
 ): Promise<BiblonBook[]> {
   const allBooks: BiblonBook[] = []
-  const PAGE_SIZE = 500
+  const PAGE_SIZE = 100
   let offset = 0
   const MAX_OFFSET = 9900 // offset + limit ≤ 10000
   const maxPages = options?.maxPages || 100
