@@ -100,7 +100,8 @@ export async function GET(request: NextRequest) {
   try {
     // 1 & 2. Biblon取得と既存ISBN取得を並列実行（10s制限対策）
     const today = new Date()
-    const publishedFrom = toDateStr(today)
+    // 7日前から検索して、最近Biblonに追加された過去発売日の本も拾う
+    const publishedFrom = toDateStr(addDays(today, -7))
     const publishedTo = toDateStr(addDays(today, 120))
 
     // 既存ISBN取得関数
