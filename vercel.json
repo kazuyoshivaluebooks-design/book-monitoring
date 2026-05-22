@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/cron/monitor",
-      "schedule": "0 23 * * 0-4"
+      "schedule": "0 23 * * *"
     },
     {
       "path": "/api/sns/check?limit=3",

@@ -132,11 +132,11 @@ export async function GET(request: NextRequest) {
       return isbns
     }
 
-    // 並列実行
+    // 並列実行（Biblon timeoutを7sに拡張して取りこぼし防止）
     const [biblonResult, existingIsbns] = await Promise.all([
       fetchUpcomingBooks(publishedFrom, publishedTo, biblonApiKey, {
-        maxPages: 50,
-        timeoutMs: 5000,
+        maxPages: 100,
+        timeoutMs: 7000,
       }).catch((e: Error) => {
         results.errors.push(`Biblon API エラー: ${e.message}`)
         return [] as BiblonBook[]
