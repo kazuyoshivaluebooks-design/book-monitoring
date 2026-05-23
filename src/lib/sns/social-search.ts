@@ -322,7 +322,7 @@ export async function searchSocialProfiles(
 
   const serperApiKey = process.env.SERPER_API_KEY
   const braveApiKey = process.env.BRAVE_SEARCH_API_KEY
-  let lastQuotaError: QuotaExhaustedError | null = null
+  let serperQuotaExhausted = false
 
   // 優先順に試行し、結果が空ならフォールバック
   // 1. Serper.dev（Google検索API） ★推奨
@@ -331,39 +331,41 @@ export async function searchSocialProfiles(
       allItems = await searchWithSerper(authorName, serperApiKey)
     } catch (e) {
       if (e instanceof QuotaExhaustedError) {
-        lastQuotaError = e
+        serperQuotaExhausted = true
         console.warn(`[search] Serperクレジット不足、Braveにフォールバック: ${e.message}`)
+      } else {
+        // タイムアウト等の一時的エラー — Braveにフォールバックしない（Braveは常に402のため）
+        console.warn(`[search] Serper一時エラー（結果0件として続行）: ${e instanceof Error ? e.message : String(e)}`)
       }
     }
   }
 
-  // 2. Brave Search API
-  if (allItems.length === 0 && braveApiKey) {
+  // 2. Brave Search API（Serperがクレジット不足の場合のみフォールバック）
+  if (allItems.length === 0 && serperQuotaExhausted && braveApiKey) {
     try {
       allItems = await searchWithBrave(authorName, braveApiKey)
     } catch (e) {
       if (e instanceof QuotaExhaustedError) {
-        lastQuotaError = e
         console.warn(`[search] Braveクレジット不足: ${e.message}`)
       }
     }
   }
 
   // 3. Google CSE（最終フォールバック）
-  if (allItems.length === 0 && apiKey && cx) {
+  if (allItems.length === 0 && serperQuotaExhausted && apiKey && cx) {
     try {
       allItems = await searchWithGoogle(authorName, apiKey, cx)
     } catch (e) {
       if (e instanceof QuotaExhaustedError) {
-        lastQuotaError = e
+        console.warn(`[search] Google CSEクォータ超過: ${e.message}`)
       }
     }
   }
 
-  // 全API枯渇: 結果0件のまま保存されることを防ぐためエラーを投げる
-  if (allItems.length === 0 && lastQuotaError) {
+  // 全API枯渇: Serper自体がクレジット不足で、かつ結果が0件の場合のみ
+  if (allItems.length === 0 && serperQuotaExhausted) {
     throw new QuotaExhaustedError(
-      `全検索APIのクレジットが枯渇しています。Serper/Brave/Google CSEのいずれも使用できません。`
+      `検索APIのクレジットが枯渇しています。Serperのクレジットを補充してください。`
     )
   }
 
