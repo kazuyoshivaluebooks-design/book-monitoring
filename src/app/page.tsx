@@ -123,16 +123,19 @@ function BookCover({ isbn, coverUrl }: { isbn: string | null; coverUrl: string |
     if (!src) { setStatus('none'); return }
 
     let cancelled = false
+    let settled = false
     const img = new Image()
     img.onload = () => {
       if (cancelled) return
+      settled = true
       if (img.naturalWidth < 10) {
         // Biblon画像が小さい場合、openBDをフォールバック
         if (coverUrl && isbn) {
+          settled = false
           const fallback = `https://cover.openbd.jp/${isbn}.jpg`
           const img2 = new Image()
-          img2.onload = () => { if (!cancelled) { setImgSrc(fallback); setStatus('ok') } }
-          img2.onerror = () => { if (!cancelled) setStatus('none') }
+          img2.onload = () => { if (!cancelled) { settled = true; setImgSrc(fallback); setStatus('ok') } }
+          img2.onerror = () => { if (!cancelled) { settled = true; setStatus('none') } }
           img2.src = fallback
         } else {
           setStatus('none')
@@ -148,15 +151,16 @@ function BookCover({ isbn, coverUrl }: { isbn: string | null; coverUrl: string |
       if (coverUrl && isbn) {
         const fallback = `https://cover.openbd.jp/${isbn}.jpg`
         const img2 = new Image()
-        img2.onload = () => { if (!cancelled) { setImgSrc(fallback); setStatus(img2.naturalWidth < 10 ? 'none' : 'ok') } }
-        img2.onerror = () => { if (!cancelled) setStatus('none') }
+        img2.onload = () => { if (!cancelled) { settled = true; setImgSrc(fallback); setStatus(img2.naturalWidth < 10 ? 'none' : 'ok') } }
+        img2.onerror = () => { if (!cancelled) { settled = true; setStatus('none') } }
         img2.src = fallback
       } else {
+        settled = true
         setStatus('none')
       }
     }
     img.src = src
-    const timer = setTimeout(() => { if (!cancelled && status === 'loading') setStatus('none') }, 5000)
+    const timer = setTimeout(() => { if (!cancelled && !settled) setStatus('none') }, 5000)
     return () => { cancelled = true; clearTimeout(timer) }
   }, [isbn, coverUrl])
 
