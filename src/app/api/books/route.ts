@@ -238,17 +238,17 @@ export async function GET(request: NextRequest) {
     query = query.or(`release_date.gte.${cutoff},release_date.is.null`)
   }
 
-  // 発売前のみフィルタ
+  // 発売前のみフィルタ（JST基準）
   if (releaseFilter === 'upcoming') {
-    const today = new Date().toISOString().split('T')[0]
-    query = query.gt('release_date', today)
+    const jstToday = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().split('T')[0]
+    query = query.gt('release_date', jstToday)
   }
 
-  // 本日調査完了フィルタ
+  // 本日調査完了フィルタ（JST基準）
   if (checkedToday === '1') {
-    const today = new Date().toISOString().split('T')[0]
+    const jstToday = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().split('T')[0]
     query = query
-      .gte('updated_at', `${today}T00:00:00`)
+      .gte('updated_at', `${jstToday}T00:00:00+09:00`)
       .not('evaluation_reason', 'is', null)
       .not('evaluation_reason', 'eq', '自動検出 - SNS調査待ち')
   }

@@ -88,13 +88,16 @@ export async function GET(request: NextRequest) {
     .not('author', 'is', null)
     .not('author', 'eq', '')
 
-  // 6. 今日の新着件数（全体＋ランク別）
-  const today = new Date().toISOString().split('T')[0]
+  // 6. 今日の新着件数（全体＋ランク別）— JST基準
+  // JST (UTC+9) で「今日」を計算し、クエリもJSTタイムゾーンで比較
+  const jstNow = new Date(Date.now() + 9 * 60 * 60 * 1000)
+  const today = jstNow.toISOString().split('T')[0]
+  const TZ = '+09:00' // JST
   const { count: todayCount } = await supabase
     .from('books')
     .select('id', { count: 'exact', head: true })
-    .gte('discovered_at', `${today}T00:00:00`)
-    .lt('discovered_at', `${today}T23:59:59.999`)
+    .gte('discovered_at', `${today}T00:00:00${TZ}`)
+    .lt('discovered_at', `${today}T23:59:59.999${TZ}`)
 
   const todayRanks: Record<string, number> = {}
   for (const rankVal of ['高確率', '注目', '中確率']) {
@@ -102,8 +105,8 @@ export async function GET(request: NextRequest) {
       .from('books')
       .select('id', { count: 'exact', head: true })
       .eq('rank', rankVal)
-      .gte('discovered_at', `${today}T00:00:00`)
-      .lt('discovered_at', `${today}T23:59:59.999`)
+      .gte('discovered_at', `${today}T00:00:00${TZ}`)
+      .lt('discovered_at', `${today}T23:59:59.999${TZ}`)
     todayRanks[rankVal] = rc || 0
   }
 
@@ -111,7 +114,7 @@ export async function GET(request: NextRequest) {
   const { count: todayCheckedCount } = await supabase
     .from('books')
     .select('id', { count: 'exact', head: true })
-    .gte('updated_at', `${today}T00:00:00`)
+    .gte('updated_at', `${today}T00:00:00${TZ}`)
     .not('evaluation_reason', 'is', null)
     .not('evaluation_reason', 'eq', '自動検出 - SNS調査待ち')
 
@@ -122,7 +125,7 @@ export async function GET(request: NextRequest) {
       .from('books')
       .select('id', { count: 'exact', head: true })
       .eq('rank', rankVal)
-      .gte('updated_at', `${today}T00:00:00`)
+      .gte('updated_at', `${today}T00:00:00${TZ}`)
       .not('evaluation_reason', 'is', null)
       .not('evaluation_reason', 'eq', '自動検出 - SNS調査待ち')
     todayCheckedRanks[rankVal] = rc || 0
@@ -134,24 +137,24 @@ export async function GET(request: NextRequest) {
     .select('id', { count: 'exact', head: true })
     .not('title', 'like', '[詳細取得中]%')
 
-  // 9. 過去7日間の日別新着数
+  // 9. 過去7日間の日別新着数（JST基準）
   const dailyStats: Array<{ date: string; newBooks: number; checked: number }> = []
   for (let i = 6; i >= 0; i--) {
-    const d = new Date()
+    const d = new Date(Date.now() + 9 * 60 * 60 * 1000) // JST
     d.setDate(d.getDate() - i)
     const dateStr = d.toISOString().split('T')[0]
 
     const { count: dayNew } = await supabase
       .from('books')
       .select('id', { count: 'exact', head: true })
-      .gte('discovered_at', `${dateStr}T00:00:00`)
-      .lt('discovered_at', `${dateStr}T23:59:59.999`)
+      .gte('discovered_at', `${dateStr}T00:00:00${TZ}`)
+      .lt('discovered_at', `${dateStr}T23:59:59.999${TZ}`)
 
     const { count: dayChecked } = await supabase
       .from('books')
       .select('id', { count: 'exact', head: true })
-      .gte('updated_at', `${dateStr}T00:00:00`)
-      .lt('updated_at', `${dateStr}T23:59:59.999`)
+      .gte('updated_at', `${dateStr}T00:00:00${TZ}`)
+      .lt('updated_at', `${dateStr}T23:59:59.999${TZ}`)
       .not('evaluation_reason', 'is', null)
       .not('evaluation_reason', 'eq', '自動検出 - SNS調査待ち')
 
