@@ -98,13 +98,10 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    // 1 & 2. Biblon取得（近日・遠日の2分割）と既存ISBN取得を並列実行
+    // 1 & 2. Biblon取得と既存ISBN取得を並列実行（10s制限対策）
     const today = new Date()
-    // 近日: 7日前〜30日後、遠日: 31日後〜120日後（分割で取りこぼし防止）
-    const nearFrom = toDateStr(addDays(today, -7))
-    const nearTo = toDateStr(addDays(today, 30))
-    const farFrom = toDateStr(addDays(today, 31))
-    const farTo = toDateStr(addDays(today, 120))
+    const publishedFrom = toDateStr(addDays(today, -7))
+    const publishedTo = toDateStr(addDays(today, 120))
 
     // 既存ISBN取得関数
     async function loadExistingIsbns(): Promise<Set<string>> {
@@ -113,7 +110,7 @@ export async function GET(request: NextRequest) {
       let from = 0
       let hasMore = true
       while (hasMore) {
-        if (Date.now() - startTime > 6000) {
+        if (Date.now() - startTime > 7000) {
           results.errors.push(`既存チェック打ち切り: ${isbns.size}件取得済み`)
           break
         }
@@ -135,26 +132,21 @@ export async function GET(request: NextRequest) {
       return isbns
     }
 
-    // 3並列実行: 近日Biblon + 遠日Biblon + 既存ISBN
-    const [nearResult, farResult, existingIsbns] = await Promise.all([
-      fetchUpcomingBooks(nearFrom, nearTo, biblonApiKey, {
-        maxPages: 50,
-        timeoutMs: 6000,
+    // 並列実行: Biblon（desc順 = 新しい発売日から）+ 既存ISBN
+    // desc順にすることで、遠い未来の新刊（まだDB未登録の可能性が高い）を先に取得
+    const [biblonResult, existingIsbns] = await Promise.all([
+      fetchUpcomingBooks(publishedFrom, publishedTo, biblonApiKey, {
+        maxPages: 100,
+        timeoutMs: 7000,
+        sort: 'published_date:desc',
       }).catch((e: Error) => {
-        results.errors.push(`Biblon近日APIエラー: ${e.message}`)
-        return [] as BiblonBook[]
-      }),
-      fetchUpcomingBooks(farFrom, farTo, biblonApiKey, {
-        maxPages: 50,
-        timeoutMs: 6000,
-      }).catch((e: Error) => {
-        results.errors.push(`Biblon遠日APIエラー: ${e.message}`)
+        results.errors.push(`Biblon API エラー: ${e.message}`)
         return [] as BiblonBook[]
       }),
       loadExistingIsbns(),
     ])
 
-    const biblonBooks = [...nearResult, ...farResult]
+    const biblonBooks = biblonResult
     results.biblonFetched = biblonBooks.length
 
     if (biblonBooks.length === 0) {

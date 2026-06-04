@@ -71,7 +71,7 @@ export async function fetchUpcomingBooks(
   publishedFrom: string,
   publishedTo: string,
   apiKey: string,
-  options?: { maxPages?: number; timeoutMs?: number }
+  options?: { maxPages?: number; timeoutMs?: number; sort?: string }
 ): Promise<BiblonBook[]> {
   const allBooks: BiblonBook[] = []
   const PAGE_SIZE = 100
@@ -80,6 +80,7 @@ export async function fetchUpcomingBooks(
   const maxPages = options?.maxPages || 100
   const startTime = Date.now()
   const timeoutMs = options?.timeoutMs || 30000
+  const sortOrder = options?.sort || 'published_date:asc'
   let pageCount = 0
 
   while (offset <= MAX_OFFSET && pageCount < maxPages) {
@@ -89,7 +90,7 @@ export async function fetchUpcomingBooks(
     const params = new URLSearchParams({
       published_from: publishedFrom,
       published_to: publishedTo,
-      sort: 'published_date:asc',
+      sort: sortOrder,
       limit: String(PAGE_SIZE),
       offset: String(offset),
     })
