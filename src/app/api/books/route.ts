@@ -253,6 +253,14 @@ export async function GET(request: NextRequest) {
       .not('evaluation_reason', 'eq', '自動検出 - SNS調査待ち')
   }
 
+  // 登録日の範囲フィルタ（カレンダー用、JST基準）
+  const discoveredDate = searchParams.get('discovered_date')
+  if (discoveredDate) {
+    query = query
+      .gte('discovered_at', `${discoveredDate}T00:00:00+09:00`)
+      .lt('discovered_at', `${discoveredDate}T23:59:59.999+09:00`)
+  }
+
   if (search) {
     query = query.or(`title.ilike.%${search}%,author.ilike.%${search}%,publisher.ilike.%${search}%`)
   }

@@ -348,158 +348,262 @@ function BookCard({
 }
 
 // ========================================
-// 日別ビュー用コンポーネント
+// カレンダービュー
 // ========================================
-function DailyView({
-  books,
+type DayCounts = { total: number; high: number; mid: number; watch: number; unranked: number }
+
+function CalendarView({
   onStatusChange,
   onDelete,
 }: {
-  books: Book[]
   onStatusChange: (id: string, status: string) => void
   onDelete: (id: string) => void
 }) {
-  // JST基準で日付グループ化
-  const grouped = (() => {
-    const map = new Map<string, Book[]>()
-    for (const book of books) {
-      const utc = new Date(book.discovered_at)
-      const jst = new Date(utc.getTime() + 9 * 60 * 60 * 1000)
-      const dateKey = jst.toISOString().split('T')[0]
-      if (!map.has(dateKey)) map.set(dateKey, [])
-      map.get(dateKey)!.push(book)
-    }
-    // 各グループ内をランク順にソート
-    for (const [, group] of map) {
-      group.sort((a, b) => {
-        const aRank = RANK_PRIORITY[a.rank || ''] ?? RANK_NONE
-        const bRank = RANK_PRIORITY[b.rank || ''] ?? RANK_NONE
-        if (aRank !== bRank) return aRank - bRank
-        return (a.title || '').localeCompare(b.title || '', 'ja')
-      })
-    }
-    // 日付降順でソート
-    return [...map.entries()].sort((a, b) => b[0].localeCompare(a[0]))
-  })()
-
-  const [expandedDates, setExpandedDates] = useState<Set<string>>(() => {
-    // 最新2日分を初期展開
-    return new Set(grouped.slice(0, 2).map(([d]) => d))
+  const jstNow = new Date(Date.now() + 9 * 60 * 60 * 1000)
+  const [viewYear, setViewYear] = useState(jstNow.getUTCFullYear())
+  const [viewMonth, setViewMonth] = useState(jstNow.getUTCMonth() + 1)
+  const [calData, setCalData] = useState<Record<string, DayCounts>>({})
+  const [calLoading, setCalLoading] = useState(true)
+  const [selectedDate, setSelectedDate] = useState<string | null>(null)
+  const [dayBooks, setDayBooks] = useState<Book[]>([])
+  const [dayLoading, setDayLoading] = useState(false)
+  const [checkedDates, setCheckedDates] = useState<Set<string>>(() => {
+    if (typeof window === 'undefined') return new Set()
+    try {
+      const stored = localStorage.getItem('book-monitor-checked-dates')
+      return stored ? new Set(JSON.parse(stored)) : new Set()
+    } catch { return new Set() }
   })
 
-  const toggleDate = (date: string) => {
-    setExpandedDates(prev => {
+  const todayStr = (() => {
+    const d = new Date(Date.now() + 9 * 60 * 60 * 1000)
+    return d.toISOString().split('T')[0]
+  })()
+
+  // カレンダーデータ取得
+  useEffect(() => {
+    setCalLoading(true)
+    fetch(`/api/books/calendar?year=${viewYear}&month=${viewMonth}`)
+      .then(r => r.json())
+      .then(data => { setCalData(data.days || {}); setCalLoading(false) })
+      .catch(() => setCalLoading(false))
+  }, [viewYear, viewMonth])
+
+  // 日付クリック時にその日の書籍を取得
+  useEffect(() => {
+    if (!selectedDate) return
+    setDayLoading(true)
+    fetch(`/api/books?discovered_date=${selectedDate}&sort=discovered_at&order=desc&limit=500`)
+      .then(r => r.json())
+      .then(data => {
+        if (Array.isArray(data)) {
+          // ランク順にソート
+          data.sort((a: Book, b: Book) => {
+            const aR = RANK_PRIORITY[a.rank || ''] ?? RANK_NONE
+            const bR = RANK_PRIORITY[b.rank || ''] ?? RANK_NONE
+            if (aR !== bR) return aR - bR
+            return (a.title || '').localeCompare(b.title || '', 'ja')
+          })
+          setDayBooks(data)
+        }
+        setDayLoading(false)
+      })
+      .catch(() => setDayLoading(false))
+  }, [selectedDate])
+
+  const toggleChecked = (date: string) => {
+    setCheckedDates(prev => {
       const next = new Set(prev)
       if (next.has(date)) next.delete(date)
       else next.add(date)
+      try { localStorage.setItem('book-monitor-checked-dates', JSON.stringify([...next])) } catch {}
       return next
     })
   }
 
-  const todayJst = (() => {
-    const now = new Date(Date.now() + 9 * 60 * 60 * 1000)
-    return now.toISOString().split('T')[0]
-  })()
+  const prevMonth = () => {
+    if (viewMonth === 1) { setViewYear(viewYear - 1); setViewMonth(12) }
+    else setViewMonth(viewMonth - 1)
+    setSelectedDate(null)
+  }
+  const nextMonth = () => {
+    if (viewMonth === 12) { setViewYear(viewYear + 1); setViewMonth(1) }
+    else setViewMonth(viewMonth + 1)
+    setSelectedDate(null)
+  }
+
+  // カレンダーグリッド生成
+  const firstDay = new Date(viewYear, viewMonth - 1, 1)
+  const startDow = firstDay.getDay() // 0=日
+  const daysInMonth = new Date(viewYear, viewMonth, 0).getDate()
+  const weeks: (number | null)[][] = []
+  let week: (number | null)[] = Array(startDow).fill(null)
+  for (let d = 1; d <= daysInMonth; d++) {
+    week.push(d)
+    if (week.length === 7) { weeks.push(week); week = [] }
+  }
+  if (week.length > 0) { while (week.length < 7) week.push(null); weeks.push(week) }
+
+  const DOW = ['日', '月', '火', '水', '木', '金', '土']
 
   return (
-    <div className="space-y-4">
-      {grouped.map(([date, dayBooks]) => {
-        const isExpanded = expandedDates.has(date)
-        const isToday = date === todayJst
-        const ranked = dayBooks.filter(b => b.rank)
-        const unranked = dayBooks.filter(b => !b.rank)
-        const rankSummary = ['高確率', '中確率', '注目']
-          .map(r => {
-            const count = dayBooks.filter(b => b.rank === r).length
-            return count > 0 ? `${r}${count}` : ''
-          })
-          .filter(Boolean)
-          .join(' / ')
+    <div>
+      {/* カレンダーヘッダー */}
+      <div className="flex items-center justify-between mb-4">
+        <button onClick={prevMonth} className="px-3 py-1 text-sm bg-white border rounded hover:bg-gray-50">
+          ← 前月
+        </button>
+        <h2 className="text-lg font-bold text-gray-800">
+          {viewYear}年{viewMonth}月
+        </h2>
+        <button onClick={nextMonth} className="px-3 py-1 text-sm bg-white border rounded hover:bg-gray-50">
+          翌月 →
+        </button>
+      </div>
 
-        return (
-          <div key={date} className="bg-white rounded-lg border shadow-sm overflow-hidden">
+      {/* カレンダーグリッド */}
+      {calLoading ? (
+        <div className="text-center py-8 text-gray-400">読み込み中...</div>
+      ) : (
+        <div className="bg-white rounded-lg border shadow-sm overflow-hidden">
+          <div className="grid grid-cols-7">
+            {DOW.map((d, i) => (
+              <div key={d} className={`px-1 py-2 text-center text-xs font-medium border-b ${
+                i === 0 ? 'text-red-400' : i === 6 ? 'text-blue-400' : 'text-gray-500'
+              }`}>{d}</div>
+            ))}
+            {weeks.flat().map((day, i) => {
+              if (day === null) return <div key={`empty-${i}`} className="border-b border-r bg-gray-50 min-h-[80px]" />
+              const dateStr = `${viewYear}-${String(viewMonth).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+              const counts = calData[dateStr]
+              const isToday = dateStr === todayStr
+              const isSelected = dateStr === selectedDate
+              const isChecked = checkedDates.has(dateStr)
+              const dow = (startDow + day - 1) % 7
+
+              return (
+                <button
+                  key={dateStr}
+                  onClick={() => setSelectedDate(isSelected ? null : dateStr)}
+                  className={`border-b border-r min-h-[80px] p-1 text-left transition-colors relative ${
+                    isSelected ? 'bg-indigo-50 ring-2 ring-inset ring-indigo-400' :
+                    isToday ? 'bg-green-50' :
+                    isChecked ? 'bg-emerald-50/50' :
+                    'hover:bg-gray-50'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className={`text-sm font-medium ${
+                      dow === 0 ? 'text-red-500' : dow === 6 ? 'text-blue-500' :
+                      isToday ? 'text-green-700 font-bold' : 'text-gray-700'
+                    }`}>
+                      {day}
+                    </span>
+                    {isChecked && (
+                      <span className="text-emerald-500 text-xs" title="チェック済み">✓</span>
+                    )}
+                  </div>
+                  {counts && counts.total > 0 && (
+                    <div className="mt-0.5 space-y-0.5">
+                      <div className="text-xs font-bold text-gray-600">{counts.total}冊</div>
+                      <div className="flex flex-wrap gap-0.5">
+                        {counts.high > 0 && (
+                          <span className="text-[10px] px-1 rounded bg-red-100 text-red-700 font-medium">
+                            高{counts.high}
+                          </span>
+                        )}
+                        {counts.mid > 0 && (
+                          <span className="text-[10px] px-1 rounded bg-orange-100 text-orange-700 font-medium">
+                            中{counts.mid}
+                          </span>
+                        )}
+                        {counts.watch > 0 && (
+                          <span className="text-[10px] px-1 rounded bg-blue-100 text-blue-700 font-medium">
+                            注{counts.watch}
+                          </span>
+                        )}
+                        {counts.unranked > 0 && (
+                          <span className="text-[10px] px-1 rounded bg-gray-100 text-gray-500">
+                            他{counts.unranked}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* 選択日の書籍一覧 */}
+      {selectedDate && (
+        <div className="mt-6">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-lg font-bold text-gray-800">
+              {selectedDate.replace(/-/g, '/')} の登録書籍
+              {calData[selectedDate] && (
+                <span className="ml-2 text-sm font-normal text-gray-500">
+                  {calData[selectedDate].total}冊
+                </span>
+              )}
+            </h3>
             <button
-              onClick={() => toggleDate(date)}
-              className={`w-full px-4 py-3 flex items-center justify-between text-left hover:bg-gray-50 transition-colors ${
-                isToday ? 'bg-green-50 border-l-4 border-l-green-500' : ''
+              onClick={() => toggleChecked(selectedDate)}
+              className={`px-4 py-1.5 text-sm font-medium rounded-lg border transition-colors ${
+                checkedDates.has(selectedDate)
+                  ? 'bg-emerald-100 text-emerald-700 border-emerald-300'
+                  : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
               }`}
             >
-              <div className="flex items-center gap-3">
-                <span className="text-lg font-bold text-gray-800">
-                  {date.replace(/-/g, '/')}
-                </span>
-                {isToday && (
-                  <span className="px-2 py-0.5 bg-green-100 text-green-700 rounded-full text-xs font-medium">
-                    今日
-                  </span>
-                )}
-                <span className="text-sm text-gray-500">
-                  {dayBooks.length}冊
-                </span>
-                {rankSummary && (
-                  <span className="text-xs text-gray-400">
-                    ({rankSummary})
-                  </span>
-                )}
-              </div>
-              <span className="text-gray-400 text-sm">{isExpanded ? '▲' : '▼'}</span>
+              {checkedDates.has(selectedDate) ? '✓ チェック済み' : 'チェック済みにする'}
             </button>
-
-            {isExpanded && (
-              <div className="border-t">
-                {/* ランク付き書籍 */}
-                {ranked.length > 0 && (
-                  <div className="divide-y divide-gray-50">
-                    {ranked.map(book => (
-                      <DailyBookRow key={book.id} book={book} onStatusChange={onStatusChange} onDelete={onDelete} />
-                    ))}
-                  </div>
-                )}
-                {/* ランクなし書籍 */}
-                {unranked.length > 0 && (
-                  <>
-                    <div className="px-4 py-1.5 bg-gray-50 text-xs text-gray-400 font-medium">
-                      ランクなし ({unranked.length}冊)
-                    </div>
-                    <div className="divide-y divide-gray-50">
-                      {unranked.map(book => (
-                        <DailyBookRow key={book.id} book={book} onStatusChange={onStatusChange} onDelete={onDelete} compact />
-                      ))}
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
           </div>
-        )
-      })}
-      {grouped.length === 0 && (
-        <div className="text-center py-12 text-gray-400">データがありません</div>
+
+          {dayLoading ? (
+            <div className="text-center py-8 text-gray-400">読み込み中...</div>
+          ) : dayBooks.length === 0 ? (
+            <div className="text-center py-8 text-gray-400">この日の登録はありません</div>
+          ) : (
+            <div className="bg-white rounded-lg border shadow-sm overflow-hidden divide-y divide-gray-100">
+              {dayBooks.map(book => (
+                <CalendarBookRow
+                  key={book.id}
+                  book={book}
+                  onStatusChange={onStatusChange}
+                  onDelete={onDelete}
+                />
+              ))}
+            </div>
+          )}
+        </div>
       )}
     </div>
   )
 }
 
-function DailyBookRow({
+function CalendarBookRow({
   book,
   onStatusChange,
   onDelete,
-  compact,
 }: {
   book: Book
   onStatusChange: (id: string, status: string) => void
   onDelete: (id: string) => void
-  compact?: boolean
 }) {
   const [showDetail, setShowDetail] = useState(false)
+  const isRanked = !!book.rank
 
   return (
-    <div className={`px-4 py-2 hover:bg-gray-50 transition-colors ${compact ? 'py-1.5' : ''}`}>
+    <div className={`px-4 py-2 hover:bg-gray-50 transition-colors ${!isRanked ? 'bg-gray-50/30' : ''}`}>
       <div className="flex items-center gap-2">
-        {book.rank && (
+        {book.rank ? (
           <span className={`px-1.5 py-0.5 rounded text-xs font-bold flex-shrink-0 ${RANK_COLORS[book.rank]}`}>
             {book.rank}
           </span>
+        ) : (
+          <span className="px-1.5 py-0.5 rounded text-xs text-gray-400 bg-gray-100 flex-shrink-0">—</span>
         )}
         <div className="flex-1 min-w-0 flex items-center gap-2">
           {book.isbn ? (
@@ -507,23 +611,18 @@ function DailyBookRow({
               href={`https://www.hanmoto.com/bd/isbn/${book.isbn}`}
               target="_blank"
               rel="noopener noreferrer"
-              className={`font-medium hover:text-indigo-600 hover:underline truncate ${compact ? 'text-sm text-gray-600' : 'text-sm'}`}
+              className={`hover:text-indigo-600 hover:underline truncate ${isRanked ? 'text-sm font-medium' : 'text-sm text-gray-500'}`}
             >
               {book.title}
             </a>
           ) : (
-            <span className={`font-medium truncate ${compact ? 'text-sm text-gray-600' : 'text-sm'}`}>
+            <span className={`truncate ${isRanked ? 'text-sm font-medium' : 'text-sm text-gray-500'}`}>
               {book.title}
             </span>
           )}
-          <span className="text-xs text-gray-400 flex-shrink-0 truncate max-w-[150px]">
+          <span className="text-xs text-gray-400 flex-shrink-0 truncate max-w-[140px]">
             {book.author}
           </span>
-          {book.publisher && (
-            <span className="text-xs text-gray-300 flex-shrink-0 truncate max-w-[120px] hidden md:inline">
-              {book.publisher}
-            </span>
-          )}
         </div>
         {book.release_date && (
           <span className="text-xs text-gray-400 flex-shrink-0 hidden sm:inline">
@@ -548,7 +647,7 @@ function DailyBookRow({
       </div>
 
       {showDetail && (
-        <div className="mt-2 ml-4 space-y-2">
+        <div className="mt-2 ml-8 space-y-2">
           <div className="flex gap-3">
             <BookCover isbn={book.isbn} coverUrl={book.cover_url} />
             <div className="flex-1 min-w-0">
@@ -588,7 +687,7 @@ function DailyBookRow({
 type TabKey = 'high' | 'watch' | 'mid' | 'all' | 'daily'
 
 const TABS: { key: TabKey; label: string; rankFilter: string; color: string }[] = [
-  { key: 'daily', label: '日別',    rankFilter: '',        color: 'emerald' },
+  { key: 'daily', label: 'カレンダー', rankFilter: '',        color: 'emerald' },
   { key: 'high',  label: '高確率',  rankFilter: '高確率',  color: 'red' },
   { key: 'mid',   label: '中確率',  rankFilter: '中確率',  color: 'orange' },
   { key: 'watch', label: '注目',    rankFilter: '注目',    color: 'blue' },
@@ -659,9 +758,9 @@ export default function Dashboard() {
       params.set('sort', 'updated_at')
       params.set('order', 'desc')
     } else if (activeTab === 'daily') {
-      // 日別一覧: 全書籍を発見日降順で取得（グルーピングはクライアント側）
-      params.set('sort', 'discovered_at')
-      params.set('order', 'desc')
+      // カレンダータブ: CalendarViewが自身でデータ取得するため、ここではスキップ
+      setLoading(false)
+      return
     } else {
       // タブに応じたランクフィルタ
       const tab = TABS.find(t => t.key === activeTab)
@@ -1178,8 +1277,7 @@ export default function Dashboard() {
             </p>
           </div>
         ) : activeTab === 'daily' ? (
-          <DailyView
-            books={books}
+          <CalendarView
             onStatusChange={handleStatusChange}
             onDelete={handleDelete}
           />
