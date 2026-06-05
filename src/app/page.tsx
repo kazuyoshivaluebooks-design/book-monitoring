@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import type { Book, SnsData } from '@/lib/supabase'
 
 const RANK_COLORS: Record<string, string> = {
@@ -362,6 +362,7 @@ function CalendarView({
   const jstNow = new Date(Date.now() + 9 * 60 * 60 * 1000)
   const [viewYear, setViewYear] = useState(jstNow.getUTCFullYear())
   const [viewMonth, setViewMonth] = useState(jstNow.getUTCMonth() + 1)
+  const detailRef = useRef<HTMLDivElement>(null)
   const [calData, setCalData] = useState<Record<string, DayCounts>>({})
   const [calLoading, setCalLoading] = useState(true)
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
@@ -409,6 +410,15 @@ function CalendarView({
         setDayLoading(false)
       })
       .catch(() => setDayLoading(false))
+  }, [selectedDate])
+
+  // 詳細セクションへ自動スクロール
+  useEffect(() => {
+    if (selectedDate && detailRef.current) {
+      setTimeout(() => {
+        detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }, 100)
+    }
   }, [selectedDate])
 
   const toggleChecked = (date: string) => {
@@ -539,7 +549,7 @@ function CalendarView({
 
       {/* 選択日の書籍一覧 */}
       {selectedDate && (
-        <div className="mt-6">
+        <div className="mt-6" ref={detailRef}>
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-lg font-bold text-gray-800">
               {selectedDate.replace(/-/g, '/')} の登録書籍
