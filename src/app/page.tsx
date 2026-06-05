@@ -1204,8 +1204,8 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* フィルタ・ソート */}
-      <div className="bg-white border-b">
+      {/* フィルタ・ソート（カレンダータブ以外） */}
+      {activeTab !== 'daily' && <div className="bg-white border-b">
         <div className="max-w-6xl mx-auto px-4 py-2">
           <div className="flex flex-wrap items-center gap-3">
             <input
@@ -1262,25 +1262,22 @@ export default function Dashboard() {
             <span className="text-xs text-gray-400">{currentTabCount}件表示</span>
           </div>
         </div>
-      </div>
+      </div>}
 
       {/* 書籍一覧 */}
       <main className="max-w-6xl mx-auto px-4 py-6">
-        {loading ? (
-          <div className="text-center py-12 text-gray-400">読み込み中...</div>
-        ) : books.length === 0 ? (
-          <div className="text-center py-12">
-            <p className="text-gray-400 text-lg mb-2">該当する書籍がありません</p>
-            <p className="text-gray-300 text-sm">
-              {activeTab !== 'all' ? '別のタブを確認するか、' : ''}
-              フィルタ条件を変更してください
-            </p>
-          </div>
-        ) : activeTab === 'daily' ? (
+        {activeTab === 'daily' ? (
           <CalendarView
             onStatusChange={handleStatusChange}
             onDelete={handleDelete}
           />
+        ) : loading ? (
+          <div className="text-center py-12 text-gray-400">読み込み中...</div>
+        ) : books.length === 0 ? (
+          <div className="text-center py-12">
+            <p className="text-gray-400 text-lg mb-2">該当する書籍がありません</p>
+            <p className="text-gray-300 text-sm">フィルタ条件を変更してください</p>
+          </div>
         ) : (
           <div className="grid gap-4 md:grid-cols-2">
             {sortedBooks.map(book => (
