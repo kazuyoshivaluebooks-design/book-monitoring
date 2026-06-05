@@ -348,11 +348,247 @@ function BookCard({
 }
 
 // ========================================
+// 日別ビュー用コンポーネント
+// ========================================
+function DailyView({
+  books,
+  onStatusChange,
+  onDelete,
+}: {
+  books: Book[]
+  onStatusChange: (id: string, status: string) => void
+  onDelete: (id: string) => void
+}) {
+  // JST基準で日付グループ化
+  const grouped = (() => {
+    const map = new Map<string, Book[]>()
+    for (const book of books) {
+      const utc = new Date(book.discovered_at)
+      const jst = new Date(utc.getTime() + 9 * 60 * 60 * 1000)
+      const dateKey = jst.toISOString().split('T')[0]
+      if (!map.has(dateKey)) map.set(dateKey, [])
+      map.get(dateKey)!.push(book)
+    }
+    // 各グループ内をランク順にソート
+    for (const [, group] of map) {
+      group.sort((a, b) => {
+        const aRank = RANK_PRIORITY[a.rank || ''] ?? RANK_NONE
+        const bRank = RANK_PRIORITY[b.rank || ''] ?? RANK_NONE
+        if (aRank !== bRank) return aRank - bRank
+        return (a.title || '').localeCompare(b.title || '', 'ja')
+      })
+    }
+    // 日付降順でソート
+    return [...map.entries()].sort((a, b) => b[0].localeCompare(a[0]))
+  })()
+
+  const [expandedDates, setExpandedDates] = useState<Set<string>>(() => {
+    // 最新2日分を初期展開
+    return new Set(grouped.slice(0, 2).map(([d]) => d))
+  })
+
+  const toggleDate = (date: string) => {
+    setExpandedDates(prev => {
+      const next = new Set(prev)
+      if (next.has(date)) next.delete(date)
+      else next.add(date)
+      return next
+    })
+  }
+
+  const todayJst = (() => {
+    const now = new Date(Date.now() + 9 * 60 * 60 * 1000)
+    return now.toISOString().split('T')[0]
+  })()
+
+  return (
+    <div className="space-y-4">
+      {grouped.map(([date, dayBooks]) => {
+        const isExpanded = expandedDates.has(date)
+        const isToday = date === todayJst
+        const ranked = dayBooks.filter(b => b.rank)
+        const unranked = dayBooks.filter(b => !b.rank)
+        const rankSummary = ['高確率', '中確率', '注目']
+          .map(r => {
+            const count = dayBooks.filter(b => b.rank === r).length
+            return count > 0 ? `${r}${count}` : ''
+          })
+          .filter(Boolean)
+          .join(' / ')
+
+        return (
+          <div key={date} className="bg-white rounded-lg border shadow-sm overflow-hidden">
+            <button
+              onClick={() => toggleDate(date)}
+              className={`w-full px-4 py-3 flex items-center justify-between text-left hover:bg-gray-50 transition-colors ${
+                isToday ? 'bg-green-50 border-l-4 border-l-green-500' : ''
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <span className="text-lg font-bold text-gray-800">
+                  {date.replace(/-/g, '/')}
+                </span>
+                {isToday && (
+                  <span className="px-2 py-0.5 bg-green-100 text-green-700 rounded-full text-xs font-medium">
+                    今日
+                  </span>
+                )}
+                <span className="text-sm text-gray-500">
+                  {dayBooks.length}冊
+                </span>
+                {rankSummary && (
+                  <span className="text-xs text-gray-400">
+                    ({rankSummary})
+                  </span>
+                )}
+              </div>
+              <span className="text-gray-400 text-sm">{isExpanded ? '▲' : '▼'}</span>
+            </button>
+
+            {isExpanded && (
+              <div className="border-t">
+                {/* ランク付き書籍 */}
+                {ranked.length > 0 && (
+                  <div className="divide-y divide-gray-50">
+                    {ranked.map(book => (
+                      <DailyBookRow key={book.id} book={book} onStatusChange={onStatusChange} onDelete={onDelete} />
+                    ))}
+                  </div>
+                )}
+                {/* ランクなし書籍 */}
+                {unranked.length > 0 && (
+                  <>
+                    <div className="px-4 py-1.5 bg-gray-50 text-xs text-gray-400 font-medium">
+                      ランクなし ({unranked.length}冊)
+                    </div>
+                    <div className="divide-y divide-gray-50">
+                      {unranked.map(book => (
+                        <DailyBookRow key={book.id} book={book} onStatusChange={onStatusChange} onDelete={onDelete} compact />
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        )
+      })}
+      {grouped.length === 0 && (
+        <div className="text-center py-12 text-gray-400">データがありません</div>
+      )}
+    </div>
+  )
+}
+
+function DailyBookRow({
+  book,
+  onStatusChange,
+  onDelete,
+  compact,
+}: {
+  book: Book
+  onStatusChange: (id: string, status: string) => void
+  onDelete: (id: string) => void
+  compact?: boolean
+}) {
+  const [showDetail, setShowDetail] = useState(false)
+
+  return (
+    <div className={`px-4 py-2 hover:bg-gray-50 transition-colors ${compact ? 'py-1.5' : ''}`}>
+      <div className="flex items-center gap-2">
+        {book.rank && (
+          <span className={`px-1.5 py-0.5 rounded text-xs font-bold flex-shrink-0 ${RANK_COLORS[book.rank]}`}>
+            {book.rank}
+          </span>
+        )}
+        <div className="flex-1 min-w-0 flex items-center gap-2">
+          {book.isbn ? (
+            <a
+              href={`https://www.hanmoto.com/bd/isbn/${book.isbn}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={`font-medium hover:text-indigo-600 hover:underline truncate ${compact ? 'text-sm text-gray-600' : 'text-sm'}`}
+            >
+              {book.title}
+            </a>
+          ) : (
+            <span className={`font-medium truncate ${compact ? 'text-sm text-gray-600' : 'text-sm'}`}>
+              {book.title}
+            </span>
+          )}
+          <span className="text-xs text-gray-400 flex-shrink-0 truncate max-w-[150px]">
+            {book.author}
+          </span>
+          {book.publisher && (
+            <span className="text-xs text-gray-300 flex-shrink-0 truncate max-w-[120px] hidden md:inline">
+              {book.publisher}
+            </span>
+          )}
+        </div>
+        {book.release_date && (
+          <span className="text-xs text-gray-400 flex-shrink-0 hidden sm:inline">
+            {book.release_date.slice(5).replace('-', '/')}
+          </span>
+        )}
+        <select
+          value={book.status}
+          onChange={(e) => onStatusChange(book.id, e.target.value)}
+          className={`text-xs px-1.5 py-0.5 rounded border cursor-pointer flex-shrink-0 ${STATUS_COLORS[book.status]}`}
+        >
+          {STATUS_OPTIONS.map(s => (
+            <option key={s} value={s}>{s}</option>
+          ))}
+        </select>
+        <button
+          onClick={() => setShowDetail(!showDetail)}
+          className="text-gray-300 hover:text-indigo-500 text-xs flex-shrink-0"
+        >
+          {showDetail ? '▲' : '▼'}
+        </button>
+      </div>
+
+      {showDetail && (
+        <div className="mt-2 ml-4 space-y-2">
+          <div className="flex gap-3">
+            <BookCover isbn={book.isbn} coverUrl={book.cover_url} />
+            <div className="flex-1 min-w-0">
+              <SnsInfo snsData={book.sns_data || {}} />
+              {book.evaluation_reason && (
+                <p className="mt-1 text-xs text-amber-800 bg-amber-50 rounded p-2">
+                  <span className="font-bold">判定根拠:</span> {book.evaluation_reason}
+                </p>
+              )}
+              {book.description && (
+                <p className="mt-1 text-xs text-gray-600 bg-gray-50 rounded p-2">
+                  {book.description.length > 200 ? book.description.slice(0, 200) + '…' : book.description}
+                </p>
+              )}
+              <div className="mt-1 flex items-center gap-3 text-xs text-gray-400">
+                {book.price && <span>{book.price.toLocaleString()}円</span>}
+                {book.pages && <span>{book.pages}p</span>}
+                {book.isbn && <span>ISBN: {book.isbn}</span>}
+                <button
+                  onClick={() => { if (confirm('削除しますか？')) onDelete(book.id) }}
+                  className="text-red-300 hover:text-red-500 ml-auto"
+                >
+                  削除
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ========================================
 // タブ定義
 // ========================================
-type TabKey = 'high' | 'watch' | 'mid' | 'all'
+type TabKey = 'high' | 'watch' | 'mid' | 'all' | 'daily'
 
 const TABS: { key: TabKey; label: string; rankFilter: string; color: string }[] = [
+  { key: 'daily', label: '日別',    rankFilter: '',        color: 'emerald' },
   { key: 'high',  label: '高確率',  rankFilter: '高確率',  color: 'red' },
   { key: 'mid',   label: '中確率',  rankFilter: '中確率',  color: 'orange' },
   { key: 'watch', label: '注目',    rankFilter: '注目',    color: 'blue' },
@@ -364,7 +600,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [filterStatus, setFilterStatus] = useState('')
-  const [activeTab, setActiveTab] = useState<TabKey>('high')
+  const [activeTab, setActiveTab] = useState<TabKey>('daily')
   const [sort1, setSort1] = useState('release_date:asc')
   const [sort2, setSort2] = useState('rank:asc')
 
@@ -421,6 +657,10 @@ export default function Dashboard() {
       // 「本日の調査完了」モード：updated_at降順で取得、クライアント側でランクソート
       params.set('checked_today', '1')
       params.set('sort', 'updated_at')
+      params.set('order', 'desc')
+    } else if (activeTab === 'daily') {
+      // 日別一覧: 全書籍を発見日降順で取得（グルーピングはクライアント側）
+      params.set('sort', 'discovered_at')
       params.set('order', 'desc')
     } else {
       // タブに応じたランクフィルタ
@@ -847,9 +1087,9 @@ export default function Dashboard() {
                       : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50'
                   }`}
                   style={isActive ? {
-                    borderBottomColor: tab.color === 'red' ? '#ef4444' : tab.color === 'blue' ? '#3b82f6' : tab.color === 'orange' ? '#f97316' : '#6b7280',
-                    backgroundColor: tab.color === 'red' ? '#fef2f2' : tab.color === 'blue' ? '#eff6ff' : tab.color === 'orange' ? '#fff7ed' : '#f9fafb',
-                    color: tab.color === 'red' ? '#b91c1c' : tab.color === 'blue' ? '#1d4ed8' : tab.color === 'orange' ? '#c2410c' : '#374151',
+                    borderBottomColor: tab.color === 'emerald' ? '#10b981' : tab.color === 'red' ? '#ef4444' : tab.color === 'blue' ? '#3b82f6' : tab.color === 'orange' ? '#f97316' : '#6b7280',
+                    backgroundColor: tab.color === 'emerald' ? '#ecfdf5' : tab.color === 'red' ? '#fef2f2' : tab.color === 'blue' ? '#eff6ff' : tab.color === 'orange' ? '#fff7ed' : '#f9fafb',
+                    color: tab.color === 'emerald' ? '#065f46' : tab.color === 'red' ? '#b91c1c' : tab.color === 'blue' ? '#1d4ed8' : tab.color === 'orange' ? '#c2410c' : '#374151',
                   } : {}}
                 >
                   {tab.label}
@@ -937,6 +1177,12 @@ export default function Dashboard() {
               フィルタ条件を変更してください
             </p>
           </div>
+        ) : activeTab === 'daily' ? (
+          <DailyView
+            books={books}
+            onStatusChange={handleStatusChange}
+            onDelete={handleDelete}
+          />
         ) : (
           <div className="grid gap-4 md:grid-cols-2">
             {sortedBooks.map(book => (
