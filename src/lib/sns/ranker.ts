@@ -189,8 +189,8 @@ JSONのみで回答してください。マークダウンのコードブロッ�
       max_tokens: 1024,
       messages: [{ role: 'user', content: prompt }],
     }, {
-      // Vercel 10秒制限対策: 判定は6秒まで。超過時はルールベース判定にフォールバック
-      timeout: 6000,
+      // Vercel 10秒制限対策: 判定は5秒まで。超過時はルールベース判定にフォールバック
+      timeout: 5000,
       maxRetries: 0,
     })
 

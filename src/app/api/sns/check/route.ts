@@ -111,7 +111,7 @@ async function checkSingleBook(bookId: string): Promise<{
   const youtubeApiKey = process.env.YOUTUBE_API_KEY
   let youtube = null
   if (youtubeApiKey && rawResults.length > 0) {
-    // YouTube照会は全体で最大4秒に制限（並列処理時の10秒制限対策）
+    // YouTube照会は全体で最大3秒に制限（並列処理時の10秒制限対策）
     youtube = await Promise.race([
       (async () => {
         const ytUrls = extractYouTubeUrls(rawResults)
@@ -123,7 +123,7 @@ async function checkSingleBook(bookId: string): Promise<{
         }
         return null
       })(),
-      new Promise<null>(resolve => setTimeout(() => resolve(null), 4000)),
+      new Promise<null>(resolve => setTimeout(() => resolve(null), 3000)),
     ])
   }
 
@@ -291,34 +291,25 @@ async function claimPendingBooks(limit: number): Promise<string[]> {
     return !Number.isFinite(ts) || now - ts > CLAIM_STALE_MS
   })
 
-  const claimed: string[] = []
   const claimValue = `${CLAIM_PREFIX}${now}`
 
-  // 通常候補: 「まだ未調査のままなら」という条件付きでクレーム
-  for (const c of candidates || []) {
-    if (claimed.length >= limit) break
-    const { data: won } = await supabase
+  // クレーム試行を並列実行（直列だとDB往復×冊数で数秒かかり10秒制限を圧迫する）
+  const normalTargets = (candidates || []).slice(0, limit).map(c => ({ id: c.id, staleValue: null as string | null }))
+  const staleTargets = staleClaims.slice(0, limit).map(s => ({ id: s.id, staleValue: s.evaluation_reason as string }))
+  const targets = [...normalTargets, ...staleTargets].slice(0, limit + 2)
+
+  const attempts = await Promise.all(targets.map(async t => {
+    let query = supabase
       .from('books')
       .update({ evaluation_reason: claimValue })
-      .eq('id', c.id)
-      .or(PENDING_OR)
-      .select('id')
-    if (won && won.length > 0) claimed.push(c.id)
-  }
+      .eq('id', t.id)
+    // 通常候補は「まだ未調査のままなら」、期限切れは「古いマーカー値のままなら」勝ち
+    query = t.staleValue === null ? query.or(PENDING_OR) : query.eq('evaluation_reason', t.staleValue)
+    const { data: won } = await query.select('id')
+    return won && won.length > 0 ? t.id : null
+  }))
 
-  // 期限切れクレーム: 「古いマーカー値のままなら」という条件付きで奪取
-  for (const s of staleClaims) {
-    if (claimed.length >= limit) break
-    const { data: won } = await supabase
-      .from('books')
-      .update({ evaluation_reason: claimValue })
-      .eq('id', s.id)
-      .eq('evaluation_reason', s.evaluation_reason)
-      .select('id')
-    if (won && won.length > 0) claimed.push(s.id)
-  }
-
-  return claimed
+  return attempts.filter((id): id is string => id !== null).slice(0, limit)
 }
 
 // GET: 未調査の書籍を処理（cron / 外部cron / ダッシュボード自動呼び出し）
@@ -347,19 +338,41 @@ export async function GET(request: NextRequest) {
     }
 
     // クレームした本を並列処理（1冊ずつの直列処理から変更 — 同じ10秒で複数冊処理）
-    const settled = await Promise.allSettled(claimedIds.map(id => checkSingleBook(id)))
+    // 締め切り制御: Vercelの10秒制限で関数ごと殺されると全結果が失われるため、
+    // 8.3秒時点で未完了の本は諦めてクレームを解除し、完了分だけ確実に返す。
+    const DEADLINE_MS = 8300
+    const budgetLeft = Math.max(DEADLINE_MS - (Date.now() - startTime), 1000)
+    type BookResult = Awaited<ReturnType<typeof checkSingleBook>>
+    type RaceOutcome = { kind: 'ok'; value: BookResult } | { kind: 'error'; reason: unknown } | { kind: 'deadline' }
+
+    const deadline = new Promise<RaceOutcome>(resolve =>
+      setTimeout(() => resolve({ kind: 'deadline' }), budgetLeft)
+    )
+
+    const settled = await Promise.all(claimedIds.map(id =>
+      Promise.race([
+        checkSingleBook(id)
+          .then((value): RaceOutcome => ({ kind: 'ok', value }))
+          .catch((reason): RaceOutcome => ({ kind: 'error', reason })),
+        deadline,
+      ])
+    ))
 
     const results: Array<{ bookId?: string; title?: string; author?: string; rank?: string | null; evaluationReason?: string; error?: string }> = []
     let quotaExhausted = false
     let quotaError = ''
+    const toRelease: string[] = []
 
     for (let i = 0; i < settled.length; i++) {
       const s = settled[i]
-      if (s.status === 'fulfilled') {
+      if (s.kind === 'ok') {
         results.push(s.value)
+      } else if (s.kind === 'deadline') {
+        // 時間切れ — クレームを解除して次回の呼び出しで再処理
+        toRelease.push(claimedIds[i])
       } else {
         // 失敗した本はクレームを解除して再キュー（調査済み扱いにしない）
-        await releaseClaim(claimedIds[i])
+        toRelease.push(claimedIds[i])
         if (s.reason instanceof QuotaExhaustedError) {
           quotaExhausted = true
           quotaError = s.reason.message
@@ -367,6 +380,10 @@ export async function GET(request: NextRequest) {
           results.push({ bookId: claimedIds[i], error: String(s.reason) })
         }
       }
+    }
+
+    if (toRelease.length > 0) {
+      await Promise.all(toRelease.map(id => releaseClaim(id)))
     }
 
     const processed = results.filter(r => !r.error).length
