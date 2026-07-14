@@ -188,6 +188,10 @@ JSONのみで回答してください。マークダウンのコードブロッ�
       model: 'claude-sonnet-4-6',
       max_tokens: 1024,
       messages: [{ role: 'user', content: prompt }],
+    }, {
+      // Vercel 10秒制限対策: 判定は6秒まで。超過時はルールベース判定にフォールバック
+      timeout: 6000,
+      maxRetries: 0,
     })
 
     const text = response.content[0]?.type === 'text'

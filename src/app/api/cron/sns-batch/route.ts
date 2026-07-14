@@ -35,8 +35,8 @@ export async function GET(request: NextRequest) {
     // 内部でsns/checkエンドポイントのロジックを直接呼ぶ代わりに
     // fetch で自分自身を呼ぶ（コード重複を避ける）
     const baseUrl = request.nextUrl.origin
-    const res = await fetch(`${baseUrl}/api/sns/check?limit=2`, {
-      signal: AbortSignal.timeout(8000),
+    const res = await fetch(`${baseUrl}/api/sns/check?limit=6`, {
+      signal: AbortSignal.timeout(9000),
     })
 
     if (!res.ok) {

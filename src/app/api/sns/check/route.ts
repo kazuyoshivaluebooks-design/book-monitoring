@@ -111,14 +111,20 @@ async function checkSingleBook(bookId: string): Promise<{
   const youtubeApiKey = process.env.YOUTUBE_API_KEY
   let youtube = null
   if (youtubeApiKey && rawResults.length > 0) {
-    const ytUrls = extractYouTubeUrls(rawResults)
-    for (const ytUrl of ytUrls.slice(0, 2)) {
-      const channelData = await getYouTubeChannelByUrl(ytUrl, youtubeApiKey)
-      if (channelData && channelData.subscriberCount > 0) {
-        youtube = channelData
-        break
-      }
-    }
+    // YouTube照会は全体で最大4秒に制限（並列処理時の10秒制限対策）
+    youtube = await Promise.race([
+      (async () => {
+        const ytUrls = extractYouTubeUrls(rawResults)
+        for (const ytUrl of ytUrls.slice(0, 2)) {
+          const channelData = await getYouTubeChannelByUrl(ytUrl, youtubeApiKey)
+          if (channelData && channelData.subscriberCount > 0) {
+            return channelData
+          }
+        }
+        return null
+      })(),
+      new Promise<null>(resolve => setTimeout(() => resolve(null), 4000)),
+    ])
   }
 
   // 3. Claude API でランク判定
@@ -224,85 +230,153 @@ export async function POST(request: NextRequest) {
   }
 }
 
+// ─── 排他ロック（クレーム）方式 ───
+// 複数の呼び出しが並走しても同じ本を二重処理しないよう、
+// 処理開始時に evaluation_reason へ「SNS調査中:<epoch ms>」マーカーを
+// 条件付きUPDATEで書き込む（勝った呼び出しだけがその本を処理できる）。
+// 関数がタイムアウトで死んでもマーカーが残るだけなので、
+// CLAIM_STALE_MS を過ぎた古いマーカーは未調査扱いに戻して再処理する。
+
+const PENDING_OR = 'evaluation_reason.is.null,evaluation_reason.eq.自動検出 - SNS調査待ち'
+const CLAIM_PREFIX = 'SNS調査中:'
+const CLAIM_STALE_MS = 3 * 60 * 1000  // 3分
+
 /**
- * 未調査書籍の残数を取得
+ * 未調査書籍の残数を取得（処理中クレームも「未完了」として数える）
  */
 async function getPendingCount(): Promise<number> {
   const { count } = await supabase
     .from('books')
     .select('id', { count: 'exact', head: true })
-    .or('evaluation_reason.is.null,evaluation_reason.eq.自動検出 - SNS調査待ち')
+    .or(`${PENDING_OR},evaluation_reason.like.${CLAIM_PREFIX}*`)
     .not('author', 'is', null)
     .not('author', 'eq', '')
   return count || 0
 }
 
+/** クレームを解除して未調査状態に戻す（エラー時の再キュー用） */
+async function releaseClaim(bookId: string): Promise<void> {
+  await supabase
+    .from('books')
+    .update({ evaluation_reason: '自動検出 - SNS調査待ち' })
+    .eq('id', bookId)
+    .like('evaluation_reason', `${CLAIM_PREFIX}%`)
+}
+
+/**
+ * 未調査書籍を最大limit冊アトミックにクレームする。
+ * 戻り値はクレームに成功した書籍IDのリスト。
+ */
+async function claimPendingBooks(limit: number): Promise<string[]> {
+  // 候補1: 通常の未調査書籍（発売日昇順）
+  const { data: candidates } = await supabase
+    .from('books')
+    .select('id')
+    .or(PENDING_OR)
+    .not('author', 'is', null)
+    .not('author', 'eq', '')
+    .order('release_date', { ascending: true, nullsFirst: false })
+    .limit(limit * 2)  // クレーム競合に負ける分を見込んで多めに取る
+
+  // 候補2: 期限切れクレーム（前の呼び出しがタイムアウトで死んだ本）
+  const { data: staleRows } = await supabase
+    .from('books')
+    .select('id, evaluation_reason')
+    .like('evaluation_reason', `${CLAIM_PREFIX}%`)
+    .limit(20)
+
+  const now = Date.now()
+  const staleClaims = (staleRows || []).filter(r => {
+    const ts = parseInt((r.evaluation_reason || '').slice(CLAIM_PREFIX.length), 10)
+    return !Number.isFinite(ts) || now - ts > CLAIM_STALE_MS
+  })
+
+  const claimed: string[] = []
+  const claimValue = `${CLAIM_PREFIX}${now}`
+
+  // 通常候補: 「まだ未調査のままなら」という条件付きでクレーム
+  for (const c of candidates || []) {
+    if (claimed.length >= limit) break
+    const { data: won } = await supabase
+      .from('books')
+      .update({ evaluation_reason: claimValue })
+      .eq('id', c.id)
+      .or(PENDING_OR)
+      .select('id')
+    if (won && won.length > 0) claimed.push(c.id)
+  }
+
+  // 期限切れクレーム: 「古いマーカー値のままなら」という条件付きで奪取
+  for (const s of staleClaims) {
+    if (claimed.length >= limit) break
+    const { data: won } = await supabase
+      .from('books')
+      .update({ evaluation_reason: claimValue })
+      .eq('id', s.id)
+      .eq('evaluation_reason', s.evaluation_reason)
+      .select('id')
+    if (won && won.length > 0) claimed.push(s.id)
+  }
+
+  return claimed
+}
 
 // GET: 未調査の書籍を処理（cron / 外部cron / ダッシュボード自動呼び出し）
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url)
-  const limit = parseInt(searchParams.get('limit') || '3', 10)
+  const limit = Math.min(Math.max(parseInt(searchParams.get('limit') || '3', 10), 1), 6)
 
   // ※ このエンドポイントはダッシュボードから直接呼ばれるため認証なし
   // 外部cronサービスからは /api/cron/sns-batch 経由で呼び出す（認証付き）
 
   try {
-    // SNS未調査の書籍を取得
-    const { data: pendingBooks, error } = await supabase
-      .from('books')
-      .select('id, title, author, evaluation_reason')
-      .or('evaluation_reason.is.null,evaluation_reason.eq.自動検出 - SNS調査待ち')
-      .not('author', 'is', null)
-      .not('author', 'eq', '')
-      .order('release_date', { ascending: true, nullsFirst: false })
-      .limit(Math.min(limit, 10))
+    const startTime = Date.now()
 
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
-    }
+    // 排他ロック付きで未調査書籍を確保（並列呼び出しでも二重処理しない）
+    const claimedIds = await claimPendingBooks(limit)
 
-    if (!pendingBooks || pendingBooks.length === 0) {
+    if (claimedIds.length === 0) {
       const remaining = await getPendingCount()
       return NextResponse.json({
-        message: 'SNS未調査の書籍はありません（全件処理完了）',
+        message: remaining === 0
+          ? 'SNS未調査の書籍はありません（全件処理完了）'
+          : '未調査の書籍は他の呼び出しが処理中です',
         processed: 0,
         remaining,
       })
     }
 
-    const startTime = Date.now()
+    // クレームした本を並列処理（1冊ずつの直列処理から変更 — 同じ10秒で複数冊処理）
+    const settled = await Promise.allSettled(claimedIds.map(id => checkSingleBook(id)))
+
     const results: Array<{ bookId?: string; title?: string; author?: string; rank?: string | null; evaluationReason?: string; error?: string }> = []
+    let quotaExhausted = false
+    let quotaError = ''
 
-    // Hobby plan: 1冊ずつ順次処理（タイムアウト回避）
-    for (const book of pendingBooks) {
-      if (Date.now() - startTime > 7000) break  // 7秒で打ち切り（10秒制限に余裕）
-
-      try {
-        const result = await checkSingleBook(book.id)
-        results.push(result)
-      } catch (e) {
-        if (e instanceof QuotaExhaustedError) {
-          // クォータ切れ — 処理済み分と一緒に返す
-          const remaining = await getPendingCount()
-          return NextResponse.json({
-            processed: results.length,
-            remaining,
-            results,
-            quotaExhausted: true,
-            quotaError: e.message,
-            elapsedMs: Date.now() - startTime,
-          })
+    for (let i = 0; i < settled.length; i++) {
+      const s = settled[i]
+      if (s.status === 'fulfilled') {
+        results.push(s.value)
+      } else {
+        // 失敗した本はクレームを解除して再キュー（調査済み扱いにしない）
+        await releaseClaim(claimedIds[i])
+        if (s.reason instanceof QuotaExhaustedError) {
+          quotaExhausted = true
+          quotaError = s.reason.message
+        } else {
+          results.push({ bookId: claimedIds[i], error: String(s.reason) })
         }
-        results.push({ bookId: book.id, error: String(e) })
       }
     }
 
+    const processed = results.filter(r => !r.error).length
     const remaining = await getPendingCount()
 
     return NextResponse.json({
-      processed: results.length,
+      processed,
       remaining,
       results,
+      ...(quotaExhausted ? { quotaExhausted: true, quotaError } : {}),
       elapsedMs: Date.now() - startTime,
     })
   } catch (e) {

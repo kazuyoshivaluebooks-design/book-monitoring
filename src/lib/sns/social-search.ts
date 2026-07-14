@@ -221,12 +221,17 @@ async function searchWithBrave(
     `"${authorName}" SNS OR Twitter OR YouTube OR Instagram OR フォロワー`,
   ]
 
+  // Brave無料プランは 1リクエスト/秒 制限。
+  // 並列実行される他の書籍との衝突を減らすため、開始前に小さなジッターを入れる
+  await new Promise(r => setTimeout(r, Math.floor(Math.random() * 700)))
+
   for (let i = 0; i < queries.length; i++) {
-    if (i > 0) await new Promise(r => setTimeout(r, 300))
+    // レート制限(1 rps)遵守: クエリ間は必ず1.1秒以上空ける
+    if (i > 0) await new Promise(r => setTimeout(r, 1100))
 
     try {
       const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(queries[i])}&count=20`
-      const res = await fetch(url, {
+      const doFetch = () => fetch(url, {
         headers: {
           'Accept': 'application/json',
           'Accept-Encoding': 'gzip',
@@ -235,15 +240,35 @@ async function searchWithBrave(
         signal: AbortSignal.timeout(4000),
       })
 
-      if (res.status === 429 || res.status === 402) {
-        throw new QuotaExhaustedError(`Brave Search APIクレジット不足 (HTTP ${res.status})`)
+      let res = await doFetch()
+
+      // 429はレート制限（1 rps超過）の可能性が高い — 1.2秒待って1回だけリトライ。
+      // ※ 429を即「クレジット枯渇」と誤判定していたのが旧バグ。
+      //    真のクレジット枯渇は402で返る。
+      if (res.status === 429) {
+        await new Promise(r => setTimeout(r, 1200))
+        res = await doFetch()
+      }
+
+      if (res.status === 402) {
+        throw new QuotaExhaustedError(`Brave Search APIクレジット不足 (HTTP 402)`)
+      }
+
+      if (res.status === 429) {
+        // リトライ後もレート制限 — このクエリは諦めるが枯渇扱いにはしない
+        console.warn(`[brave] レート制限が継続 (HTTP 429)、クエリ${i + 1}をスキップ`)
+        continue
       }
 
       if (res.status === 401 || res.status === 403) {
         return allItems  // 1クエリ目の結果があればそれを返す
       }
 
-      if (!res.ok) continue
+      if (!res.ok) {
+        const text = await res.text().catch(() => '')
+        console.warn(`[brave] HTTP ${res.status}: ${text.slice(0, 100)}`)
+        continue
+      }
 
       const data = await res.json()
       const results = (data.web?.results || []).map((r: { title?: string; url?: string; description?: string }) => ({
@@ -258,8 +283,12 @@ async function searchWithBrave(
           existingUrls.add(item.link)
         }
       }
+
+      // 1クエリ目で十分な結果が得られたら2クエリ目は省略（レート制限・時間の節約）
+      if (i === 0 && allItems.length >= 8) break
     } catch (e) {
       if (e instanceof QuotaExhaustedError) throw e
+      console.warn(`[brave] クエリ${i + 1}失敗: ${e instanceof Error ? e.message : String(e)}`)
     }
   }
 
@@ -323,36 +352,45 @@ export async function searchSocialProfiles(
   const serperApiKey = process.env.SERPER_API_KEY
   const braveApiKey = process.env.BRAVE_SEARCH_API_KEY
   let serperQuotaExhausted = false
+  let serperFailed = false      // クォータ・タイムアウト等、理由を問わずSerperが失敗したか
+  let braveQuotaExhausted = false
 
-  // 優先順に試行し、結果が空ならフォールバック
+  // 優先順に試行し、失敗ならフォールバック
   // 1. Serper.dev（Google検索API） ★推奨
   if (serperApiKey) {
     try {
       allItems = await searchWithSerper(authorName, serperApiKey)
     } catch (e) {
+      serperFailed = true
       if (e instanceof QuotaExhaustedError) {
         serperQuotaExhausted = true
         console.warn(`[search] Serperクレジット不足、Braveにフォールバック: ${e.message}`)
       } else {
-        // タイムアウト等の一時的エラー — Braveにフォールバックしない（Braveは常に402のため）
-        console.warn(`[search] Serper一時エラー（結果0件として続行）: ${e instanceof Error ? e.message : String(e)}`)
+        console.warn(`[search] Serper一時エラー、Braveにフォールバック: ${e instanceof Error ? e.message : String(e)}`)
       }
     }
+  } else {
+    serperFailed = true  // キー未設定もフォールバック対象
   }
 
-  // 2. Brave Search API（Serperがクレジット不足の場合のみフォールバック）
-  if (allItems.length === 0 && serperQuotaExhausted && braveApiKey) {
+  // 2. Brave Search API（Serperが「失敗」した場合のフォールバック）
+  // ※ Serperが正常に「結果0件」を返した場合はフォールバックしない
+  //   （無名著者のたびにBraveクレジットを消費しないため）
+  if (allItems.length === 0 && serperFailed && braveApiKey) {
     try {
       allItems = await searchWithBrave(authorName, braveApiKey)
     } catch (e) {
       if (e instanceof QuotaExhaustedError) {
+        braveQuotaExhausted = true
         console.warn(`[search] Braveクレジット不足: ${e.message}`)
+      } else {
+        console.warn(`[search] Brave一時エラー: ${e instanceof Error ? e.message : String(e)}`)
       }
     }
   }
 
   // 3. Google CSE（最終フォールバック）
-  if (allItems.length === 0 && serperQuotaExhausted && apiKey && cx) {
+  if (allItems.length === 0 && serperFailed && apiKey && cx) {
     try {
       allItems = await searchWithGoogle(authorName, apiKey, cx)
     } catch (e) {
@@ -362,11 +400,18 @@ export async function searchSocialProfiles(
     }
   }
 
-  // 全API枯渇: Serper自体がクレジット不足で、かつ結果が0件の場合のみ
-  if (allItems.length === 0 && serperQuotaExhausted) {
-    throw new QuotaExhaustedError(
-      `検索APIのクレジットが枯渇しています。Serperのクレジットを補充してください。`
-    )
+  // Serperが失敗し、フォールバックも全て結果を出せなかった場合:
+  // この本を「検索結果0件」として調査済みにしてしまうと誤データになるため、
+  // エラーを投げて呼び出し元に再キュー（後で再試行）させる。
+  if (allItems.length === 0 && serperFailed) {
+    if (serperQuotaExhausted && (braveQuotaExhausted || !braveApiKey)) {
+      // 真の枯渇: Serperのクレジットが尽き、Braveも尽きている（または未設定）
+      throw new QuotaExhaustedError(
+        `検索APIのクレジットが枯渇しています。Serperのクレジットを補充してください。`
+      )
+    }
+    // 一時エラー（タイムアウト・レート制限等）— 枯渇ではないので再試行可能として扱う
+    throw new Error('検索APIが一時的に利用できません（後で自動再試行されます）')
   }
 
   // 検索結果からプラットフォーム別プロフィールを抽出

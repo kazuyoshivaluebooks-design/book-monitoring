@@ -728,6 +728,14 @@ export default function Dashboard() {
     searchQuality: { withHits: number; zeroResults: number; skipped: number; hitRate: string }
     dailyStats: Array<{ date: string; newBooks: number; checked: number }>
     apiHealth?: Record<string, { status: string; detail?: string }>
+    costs?: {
+      month: string
+      monthChecked: number
+      serperCreditsUsedEst: number
+      serperCreditsRemaining: number | null
+      estCostUsd: number
+      note?: string
+    }
   } | null>(null)
 
   // 初回にランク別カウントを取得
@@ -749,6 +757,7 @@ export default function Dashboard() {
             searchQuality: data.searchQuality || { withHits: 0, zeroResults: 0, skipped: 0, hitRate: 'N/A' },
             dailyStats: data.dailyStats || [],
             apiHealth: data.apiHealth || undefined,
+            costs: data.costs || undefined,
           })
         }
       } catch { /* ignore */ }
@@ -1097,7 +1106,7 @@ export default function Dashboard() {
         })()}
         <div className="bg-gradient-to-r from-slate-50 to-blue-50 border-b">
           <div className="max-w-6xl mx-auto px-4 py-3">
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+            <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
               {/* 全体 */}
               <div className="bg-white rounded-lg p-3 shadow-sm border">
                 <div className="text-xs text-gray-500 mb-1">総登録数</div>
@@ -1148,6 +1157,19 @@ export default function Dashboard() {
                   {statsData.pending === 0 ? '全件チェック済み' : '自動調査中...'}
                 </div>
               </div>
+              {/* 今月のAPIコスト */}
+              {statsData.costs && (
+                <div className="bg-white rounded-lg p-3 shadow-sm border" title={statsData.costs.note || ''}>
+                  <div className="text-xs text-gray-500 mb-1">今月のAPIコスト概算</div>
+                  <div className="text-xl font-bold text-gray-900">${statsData.costs.estCostUsd.toFixed(2)}</div>
+                  <div className="text-xs text-gray-400 mt-0.5">
+                    {statsData.costs.monthChecked.toLocaleString()}冊調査
+                    {statsData.costs.serperCreditsRemaining !== null
+                      ? ` / Serper残 ${statsData.costs.serperCreditsRemaining.toLocaleString()}`
+                      : ''}
+                  </div>
+                </div>
+              )}
               {/* 7日間ミニグラフ */}
               <div className="bg-white rounded-lg p-3 shadow-sm border">
                 <div className="text-xs text-gray-500 mb-1">過去7日間の新着</div>
