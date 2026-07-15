@@ -33,7 +33,7 @@ function shouldSkipAuthor(authorName: string): boolean {
   return SKIP_AUTHOR_PATTERNS.some(p => p.test(authorName))
 }
 
-async function checkSingleBook(bookId: string): Promise<{
+async function checkSingleBook(bookId: string, deadlineAt: number = Date.now() + 8500): Promise<{
   bookId: string
   title: string
   author: string
@@ -110,8 +110,11 @@ async function checkSingleBook(bookId: string): Promise<{
   //    ※ B案: searchYouTubeAuthor(100ユニット)を廃止し、Web検索結果を主経路に
   const youtubeApiKey = process.env.YOUTUBE_API_KEY
   let youtube = null
-  if (youtubeApiKey && rawResults.length > 0) {
-    // YouTube照会は全体で最大3秒に制限（並列処理時の10秒制限対策）
+  // 残り時間が5秒未満ならYouTube照会を省略（Claude判定の時間を確保）
+  const timeLeftForYoutube = deadlineAt - Date.now()
+  if (youtubeApiKey && rawResults.length > 0 && timeLeftForYoutube > 5000) {
+    // YouTube照会は残り時間に応じて最大3秒に制限
+    const ytBudget = Math.min(3000, timeLeftForYoutube - 4500)
     youtube = await Promise.race([
       (async () => {
         const ytUrls = extractYouTubeUrls(rawResults)
@@ -123,7 +126,7 @@ async function checkSingleBook(bookId: string): Promise<{
         }
         return null
       })(),
-      new Promise<null>(resolve => setTimeout(() => resolve(null), 3000)),
+      new Promise<null>(resolve => setTimeout(() => resolve(null), ytBudget)),
     ])
   }
 
@@ -140,6 +143,10 @@ async function checkSingleBook(bookId: string): Promise<{
     }
   }
 
+  // 残り時間からClaude判定に使える時間を算出（DB更新用に700ms残す）
+  // 時間が足りない場合はrankBook内部でルールベース判定に自動フォールバック
+  const claudeTimeout = Math.max(deadlineAt - Date.now() - 700, 0)
+
   const rankResult = await rankBook(
     {
       title: book.title,
@@ -153,7 +160,8 @@ async function checkSingleBook(bookId: string): Promise<{
     youtube,
     socialProfiles,
     rawResults,
-    anthropicApiKey
+    anthropicApiKey,
+    claudeTimeout
   )
 
   // デバッグ: 検索結果の詳細をevaluation_reasonに追加
@@ -349,9 +357,12 @@ export async function GET(request: NextRequest) {
       setTimeout(() => resolve({ kind: 'deadline' }), budgetLeft)
     )
 
+    // 各本に「関数の締め切り」を渡す。本ごとに残り時間へ収まるよう段階的に
+    // 省略しながら必ず完了する設計なので、外側のdeadline raceは保険として残す。
+    const perBookDeadline = startTime + DEADLINE_MS - 300
     const settled = await Promise.all(claimedIds.map(id =>
       Promise.race([
-        checkSingleBook(id)
+        checkSingleBook(id, perBookDeadline)
           .then((value): RaceOutcome => ({ kind: 'ok', value }))
           .catch((reason): RaceOutcome => ({ kind: 'error', reason })),
         deadline,
@@ -368,8 +379,9 @@ export async function GET(request: NextRequest) {
       if (s.kind === 'ok') {
         results.push(s.value)
       } else if (s.kind === 'deadline') {
-        // 時間切れ — クレームを解除して次回の呼び出しで再処理
-        toRelease.push(claimedIds[i])
+        // 時間切れ（保険が発動した稀なケース）— クレームは解除せず残す。
+        // 3分後にstale扱いで自動再処理される。即時解除すると次の呼び出しが
+        // 同じ重い本を先頭から掴み直して無限ループになるため。
       } else {
         // 失敗した本はクレームを解除して再キュー（調査済み扱いにしない）
         toRelease.push(claimedIds[i])

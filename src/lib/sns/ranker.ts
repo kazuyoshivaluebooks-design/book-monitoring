@@ -38,8 +38,18 @@ export async function rankBook(
   youtube: YouTubeChannelData | null,
   socialProfiles: SocialProfile[],
   rawSearchResults: SearchResultRaw[],
-  apiKey: string
+  apiKey: string,
+  timeoutMs: number = 5000
 ): Promise<RankResult> {
+  // 残り時間が少なすぎる場合はClaude APIを呼ばずルールベース判定に直行
+  // （Vercel 10秒制限内で必ず完了させるため。後から /api/sns/rerank で再判定可能）
+  if (timeoutMs < 1500) {
+    const fallbackSnsData = buildFallbackSnsData(youtube, socialProfiles)
+    const fallback = fallbackRanking(fallbackSnsData, book)
+    fallback.evaluationReason = `${fallback.evaluationReason} [ルールベース判定: 時間制約によりClaude判定を省略]`
+    return fallback
+  }
+
   const client = new Anthropic({ apiKey })
 
   // YouTube データセクション（API取得済みの正確なデータ）
@@ -189,8 +199,8 @@ JSONのみで回答してください。マークダウンのコードブロッ�
       max_tokens: 1024,
       messages: [{ role: 'user', content: prompt }],
     }, {
-      // Vercel 10秒制限対策: 判定は5秒まで。超過時はルールベース判定にフォールバック
-      timeout: 5000,
+      // Vercel 10秒制限対策: 残り時間に応じた締め切り。超過時はルールベース判定にフォールバック
+      timeout: Math.min(timeoutMs, 5000),
       maxRetries: 0,
     })
 
