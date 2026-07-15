@@ -22,14 +22,12 @@ export const maxDuration = 10  // Vercel Hobby plan: max 10s
  *   URL: https://your-app.vercel.app/api/sns/rerank?token=YOUR_CRON_SECRET
  */
 export async function GET(request: NextRequest) {
-  // 認証チェック
+  // ※ /api/sns/check と同様、ダッシュボード・自動バッチから直接呼べるよう認証なし。
+  //   tokenが渡された場合のみ検証する（後方互換）。
   const cronSecret = process.env.CRON_SECRET
-  if (cronSecret) {
-    const token = request.nextUrl.searchParams.get('token')
-    const authHeader = request.headers.get('authorization')
-    if (token !== cronSecret && authHeader !== `Bearer ${cronSecret}`) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
+  const token = request.nextUrl.searchParams.get('token')
+  if (cronSecret && token && token !== cronSecret) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
   const anthropicApiKey = process.env.ANTHROPIC_API_KEY
@@ -110,7 +108,9 @@ export async function GET(request: NextRequest) {
           youtube,
           socialProfiles,
           rawSearchResults,
-          anthropicApiKey
+          anthropicApiKey,
+          // 再判定は検索ステップがない分、Claude判定に時間を割ける
+          Math.max(Math.min(8500 - (Date.now() - startTime), 7000), 1500)
         )
 
         // 再判定であることを明記
