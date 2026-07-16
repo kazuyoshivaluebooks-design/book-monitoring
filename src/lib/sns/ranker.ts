@@ -88,8 +88,8 @@ ${detectedProfiles.map(p => {
     ? `
 ## Web検索の生データ（著者名 + SNSプラットフォーム名で検索した結果）
 以下の検索結果から、著者本人のSNSアカウント、フォロワー数、影響力に関する情報を読み取ってください。
-${rawSearchResults.slice(0, 15).map((r, i) =>
-  `${i + 1}. ${r.title}\n   URL: ${r.url}\n   ${r.snippet}`
+${rawSearchResults.slice(0, 12).map((r, i) =>
+  `${i + 1}. ${r.title}\n   URL: ${r.url}\n   ${(r.snippet || '').slice(0, 200)}`
 ).join('\n')}`
     : '## Web検索: 結果なし'
 
@@ -171,7 +171,7 @@ ${rawResultsSection}
 ## 出力フォーマット（JSON で回答）
 {
   "rank": "高確率" | "中確率" | "注目" | null,
-  "reason": "判定理由を200文字以内で記述。必ず具体的なフォロワー数・登録者数の根拠を含める。数値が確認できない場合はその旨を明記",
+  "reason": "判定理由を80文字以内で簡潔に。必ず具体的なフォロワー数・登録者数の根拠を含める。数値が確認できない場合はその旨を明記",
   "confidence": "high" | "medium" | "low",
   "snsAccounts": {
     "x": { "url": "https://x.com/...", "followers": 12345 },
@@ -196,7 +196,8 @@ JSONのみで回答してください。マークダウンのコードブロッ�
   try {
     const response = await client.messages.create({
       model: 'claude-sonnet-4-6',
-      max_tokens: 1024,
+      // 出力トークン数が判定時間に直結する（Vercel 10秒制限）ため小さく保つ
+      max_tokens: 600,
       messages: [{ role: 'user', content: prompt }],
     }, {
       // Vercel 10秒制限対策: 残り時間に応じた締め切り。超過時はルールベース判定にフォールバック
