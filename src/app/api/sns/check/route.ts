@@ -320,10 +320,25 @@ async function claimPendingBooks(limit: number): Promise<string[]> {
   return attempts.filter((id): id is string => id !== null).slice(0, limit)
 }
 
-// GET: 未調査の書籍を処理（cron / 外部cron / ダッシュボード自動呼び出し）
+/**
+ * 自走ループ: 次のリンクを送信して即座に戻る。
+ * 応答は待たない（送信後にabortしてもVercel側の処理は完走する）。
+ */
+async function dispatchNext(origin: string, path: string): Promise<void> {
+  try {
+    await fetch(`${origin}${path}`, { signal: AbortSignal.timeout(1200) })
+  } catch { /* abort想定内 — 送信済みなら処理は継続される */ }
+}
+
+// GET: 未調査の書籍を処理（cron / 外部cron / ダッシュボード自動呼び出し / 自走ループ）
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url)
   const limit = Math.min(Math.max(parseInt(searchParams.get('limit') || '3', 10), 1), 6)
+  // 自走ループ: chain > 0 なら処理後に自分自身を chain-1 で呼び直す
+  const chain = Math.min(Math.max(parseInt(searchParams.get('chain') || '0', 10), 0), 2000)
+  // 停滞ガード: 残数が減らないまま stall 回連鎖したら停止（無限ループ防止）
+  const prevRemaining = parseInt(searchParams.get('prev') || '-1', 10)
+  const stall = Math.min(Math.max(parseInt(searchParams.get('stall') || '5', 10), 0), 5)
 
   // ※ このエンドポイントはダッシュボードから直接呼ばれるため認証なし
   // 外部cronサービスからは /api/cron/sns-batch 経由で呼び出す（認証付き）
@@ -347,8 +362,9 @@ export async function GET(request: NextRequest) {
 
     // クレームした本を並列処理（1冊ずつの直列処理から変更 — 同じ10秒で複数冊処理）
     // 締め切り制御: Vercelの10秒制限で関数ごと殺されると全結果が失われるため、
-    // 8.3秒時点で未完了の本は諦めてクレームを解除し、完了分だけ確実に返す。
-    const DEADLINE_MS = 8300
+    // 締め切り時点で未完了の本は段階的省略で完了させ、完了分だけ確実に返す。
+    // 自走ループ時は次リンク送信の時間(約1.3秒)を確保するため締め切りを前倒し。
+    const DEADLINE_MS = chain > 0 ? 7200 : 8300
     const budgetLeft = Math.max(DEADLINE_MS - (Date.now() - startTime), 1000)
     type BookResult = Awaited<ReturnType<typeof checkSingleBook>>
     type RaceOutcome = { kind: 'ok'; value: BookResult } | { kind: 'error'; reason: unknown } | { kind: 'deadline' }
@@ -401,11 +417,29 @@ export async function GET(request: NextRequest) {
     const processed = results.filter(r => !r.error).length
     const remaining = await getPendingCount()
 
+    // ─── 自走ループ: 次のリンクを送信 ───
+    let chained: string | null = null
+    if (chain > 0 && !quotaExhausted) {
+      const newStall = prevRemaining >= 0 && remaining >= prevRemaining ? stall - 1 : 5
+      const origin = request.nextUrl.origin
+      if (remaining > 0 && newStall > 0) {
+        // 未調査が残っている → 自分自身を呼び直す
+        chained = `check(chain=${chain - 1})`
+        await dispatchNext(origin, `/api/sns/check?limit=${limit}&chain=${chain - 1}&prev=${remaining}&stall=${newStall}&t=${Date.now()}`)
+      } else if (remaining === 0) {
+        // 未調査ゼロ → 簡易判定のAI再判定フェーズへ
+        chained = `rerank(chain=${chain - 1})`
+        await dispatchNext(origin, `/api/sns/rerank?limit=3&chain=${chain - 1}&t=${Date.now()}`)
+      }
+      // newStall <= 0（停滞）の場合は連鎖を止める
+    }
+
     return NextResponse.json({
       processed,
       remaining,
       results,
       ...(quotaExhausted ? { quotaExhausted: true, quotaError } : {}),
+      ...(chained ? { chained } : {}),
       elapsedMs: Date.now() - startTime,
     })
   } catch (e) {

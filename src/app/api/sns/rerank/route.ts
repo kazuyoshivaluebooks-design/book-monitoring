@@ -42,6 +42,10 @@ export async function GET(request: NextRequest) {
     parseInt(request.nextUrl.searchParams.get('limit') || '2', 10),
     5
   )
+  // 自走ループ: chain > 0 なら処理後に自分自身を chain-1 で呼び直す
+  const chain = Math.min(Math.max(parseInt(request.nextUrl.searchParams.get('chain') || '0', 10), 0), 2000)
+  const prevRemaining = parseInt(request.nextUrl.searchParams.get('prev') || '-1', 10)
+  const stall = Math.min(Math.max(parseInt(request.nextUrl.searchParams.get('stall') || '5', 10), 0), 5)
   const startTime = Date.now()
 
   try {
@@ -163,10 +167,26 @@ export async function GET(request: NextRequest) {
 
     const remaining = await getRemainingCount()
 
+    // ─── 自走ループ: 次のリンクを送信 ───
+    let chained: string | null = null
+    if (chain > 0 && remaining > 0) {
+      const newStall = prevRemaining >= 0 && remaining >= prevRemaining ? stall - 1 : 5
+      if (newStall > 0) {
+        chained = `rerank(chain=${chain - 1})`
+        try {
+          await fetch(
+            `${request.nextUrl.origin}/api/sns/rerank?limit=${limit}&chain=${chain - 1}&prev=${remaining}&stall=${newStall}&t=${Date.now()}`,
+            { signal: AbortSignal.timeout(1200) }
+          )
+        } catch { /* abort想定内 — 送信済みなら処理は継続される */ }
+      }
+    }
+
     return NextResponse.json({
       processed: results.length,
       remaining,
       results,
+      ...(chained ? { chained } : {}),
       source: 'sns/rerank',
       elapsedMs: Date.now() - startTime,
       timestamp: new Date().toISOString(),
