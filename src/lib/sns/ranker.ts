@@ -195,7 +195,9 @@ JSONのみで回答してください。マークダウンのコードブロッ�
 
   try {
     const response = await client.messages.create({
-      model: 'claude-sonnet-4-6',
+      // Vercel Hobbyの10秒制限内で確実に完了させるため高速モデルをデフォルトに。
+      // Vercel Pro化した場合は環境変数 RANKER_MODEL=claude-sonnet-4-6 で高品質判定に切替可能
+      model: process.env.RANKER_MODEL || 'claude-haiku-4-5',
       // 出力トークン数が判定時間に直結する（Vercel 10秒制限）ため小さく保つ
       max_tokens: 600,
       messages: [{ role: 'user', content: prompt }],
