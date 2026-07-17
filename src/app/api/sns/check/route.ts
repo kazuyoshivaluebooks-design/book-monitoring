@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse, after } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import { getYouTubeChannelByUrl } from '@/lib/sns/youtube'
 import { searchSocialProfiles, extractYouTubeUrls, QuotaExhaustedError } from '@/lib/sns/social-search'
@@ -330,42 +330,54 @@ async function dispatchNext(origin: string, path: string): Promise<void> {
   } catch { /* abort想定内 — 送信済みなら処理は継続される */ }
 }
 
-// GET: 未調査の書籍を処理（cron / 外部cron / ダッシュボード自動呼び出し / 自走ループ）
-export async function GET(request: NextRequest) {
-  const { searchParams } = new URL(request.url)
-  const limit = Math.min(Math.max(parseInt(searchParams.get('limit') || '3', 10), 1), 6)
-  // 自走ループ: chain > 0 なら処理後に自分自身を chain-1 で呼び直す
-  const chain = Math.min(Math.max(parseInt(searchParams.get('chain') || '0', 10), 0), 2000)
-  // 停滞ガード: 残数が減らないまま stall 回連鎖したら停止（無限ループ防止）
-  const prevRemaining = parseInt(searchParams.get('prev') || '-1', 10)
-  const stall = Math.min(Math.max(parseInt(searchParams.get('stall') || '5', 10), 0), 5)
+type CheckBatchResult = Record<string, unknown>
 
-  // ※ このエンドポイントはダッシュボードから直接呼ばれるため認証なし
-  // 外部cronサービスからは /api/cron/sns-batch 経由で呼び出す（認証付き）
+/**
+ * 1バッチ分の処理本体。
+ * 通常モードではGETがawaitして結果を返し、自走ループ（chain）モードでは
+ * 即座にACK応答を返した後、after()内でこの関数が実行される。
+ * （次リンクへのdispatchを短時間でabortしても、受け側は即ACKを返すため
+ *   接続切断による処理中断が起きない）
+ */
+async function runCheckBatch(opts: {
+  limit: number
+  chain: number
+  prevRemaining: number
+  stall: number
+  origin: string
+}): Promise<CheckBatchResult> {
+  const { limit, chain, prevRemaining, stall, origin } = opts
+  const startTime = Date.now()
 
-  try {
-    const startTime = Date.now()
+  // 排他ロック付きで未調査書籍を確保（並列呼び出しでも二重処理しない）
+  const claimedIds = await claimPendingBooks(limit)
 
-    // 排他ロック付きで未調査書籍を確保（並列呼び出しでも二重処理しない）
-    const claimedIds = await claimPendingBooks(limit)
-
-    if (claimedIds.length === 0) {
-      const remaining = await getPendingCount()
-      return NextResponse.json({
-        message: remaining === 0
-          ? 'SNS未調査の書籍はありません（全件処理完了）'
-          : '未調査の書籍は他の呼び出しが処理中です',
-        processed: 0,
-        remaining,
-      })
+  if (claimedIds.length === 0) {
+    const remaining = await getPendingCount()
+    // 自走ループ中で「全てクレーム中」なら少し先で再試行（別レーンが処理中）
+    if (chain > 0 && remaining > 0) {
+      const newStall = prevRemaining >= 0 && remaining >= prevRemaining ? stall - 1 : 5
+      if (newStall > 0) {
+        await dispatchNext(origin, `/api/sns/check?limit=${limit}&chain=${chain - 1}&prev=${remaining}&stall=${newStall}&t=${Date.now()}`)
+      }
+    } else if (chain > 0 && remaining === 0) {
+      await dispatchNext(origin, `/api/sns/rerank?limit=3&chain=${chain - 1}&t=${Date.now()}`)
     }
+    return {
+      message: remaining === 0
+        ? 'SNS未調査の書籍はありません（全件処理完了）'
+        : '未調査の書籍は他の呼び出しが処理中です',
+      processed: 0,
+      remaining,
+    }
+  }
 
-    // クレームした本を並列処理（1冊ずつの直列処理から変更 — 同じ10秒で複数冊処理）
-    // 締め切り制御: Vercelの10秒制限で関数ごと殺されると全結果が失われるため、
-    // 締め切り時点で未完了の本は段階的省略で完了させ、完了分だけ確実に返す。
-    // 自走ループ時は次リンク送信の時間(約1.3秒)を確保するため締め切りを前倒し。
-    const DEADLINE_MS = chain > 0 ? 7200 : 8300
-    const budgetLeft = Math.max(DEADLINE_MS - (Date.now() - startTime), 1000)
+  // クレームした本を並列処理（1冊ずつの直列処理から変更 — 同じ10秒で複数冊処理）
+  // 締め切り制御: Vercelの10秒制限で関数ごと殺されると全結果が失われるため、
+  // 締め切り時点で未完了の本は段階的省略で完了させ、完了分だけ確実に返す。
+  // 自走ループ時は次リンク送信の時間(約1.3秒)を確保するため締め切りを前倒し。
+  const DEADLINE_MS = chain > 0 ? 7200 : 8300
+  const budgetLeft = Math.max(DEADLINE_MS - (Date.now() - startTime), 1000)
     type BookResult = Awaited<ReturnType<typeof checkSingleBook>>
     type RaceOutcome = { kind: 'ok'; value: BookResult } | { kind: 'error'; reason: unknown } | { kind: 'deadline' }
 
@@ -421,7 +433,6 @@ export async function GET(request: NextRequest) {
     let chained: string | null = null
     if (chain > 0 && !quotaExhausted) {
       const newStall = prevRemaining >= 0 && remaining >= prevRemaining ? stall - 1 : 5
-      const origin = request.nextUrl.origin
       if (remaining > 0 && newStall > 0) {
         // 未調査が残っている → 自分自身を呼び直す
         chained = `check(chain=${chain - 1})`
@@ -434,14 +445,48 @@ export async function GET(request: NextRequest) {
       // newStall <= 0（停滞）の場合は連鎖を止める
     }
 
-    return NextResponse.json({
-      processed,
-      remaining,
-      results,
-      ...(quotaExhausted ? { quotaExhausted: true, quotaError } : {}),
-      ...(chained ? { chained } : {}),
-      elapsedMs: Date.now() - startTime,
+  return {
+    processed,
+    remaining,
+    results,
+    ...(quotaExhausted ? { quotaExhausted: true, quotaError } : {}),
+    ...(chained ? { chained } : {}),
+    elapsedMs: Date.now() - startTime,
+  }
+}
+
+// GET: 未調査の書籍を処理（cron / 外部cron / ダッシュボード自動呼び出し / 自走ループ）
+export async function GET(request: NextRequest) {
+  const { searchParams } = new URL(request.url)
+  const limit = Math.min(Math.max(parseInt(searchParams.get('limit') || '3', 10), 1), 6)
+  // 自走ループ: chain > 0 なら処理後に自分自身を chain-1 で呼び直す
+  const chain = Math.min(Math.max(parseInt(searchParams.get('chain') || '0', 10), 0), 2000)
+  // 停滞ガード: 残数が減らないまま stall 回連鎖したら停止（無限ループ防止）
+  const prevRemaining = parseInt(searchParams.get('prev') || '-1', 10)
+  const stall = Math.min(Math.max(parseInt(searchParams.get('stall') || '5', 10), 0), 5)
+  const origin = request.nextUrl.origin
+
+  // ※ このエンドポイントはダッシュボードから直接呼ばれるため認証なし
+  // 外部cronサービスからは /api/cron/sns-batch 経由で呼び出す（認証付き）
+
+  // 自走ループモード: 即座にACKを返し、実処理は応答後に実行する。
+  // 前のリンクからのdispatch（1.2秒でabort）がこのACKを受け取って正常完了
+  // するため、接続切断による関数中断が起きず、チェーンが安定して続く。
+  if (chain > 0) {
+    after(async () => {
+      try {
+        const result = await runCheckBatch({ limit, chain, prevRemaining, stall, origin })
+        console.log(`[chain] check chain=${chain} processed=${result.processed} remaining=${result.remaining}`)
+      } catch (e) {
+        console.error(`[chain] check chain=${chain} error:`, e)
+      }
     })
+    return NextResponse.json({ accepted: true, mode: 'chain', chain, timestamp: new Date().toISOString() })
+  }
+
+  try {
+    const result = await runCheckBatch({ limit, chain: 0, prevRemaining, stall, origin })
+    return NextResponse.json(result)
   } catch (e) {
     if (e instanceof QuotaExhaustedError) {
       return NextResponse.json(

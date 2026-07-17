@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse, after } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import type { SnsData } from '@/lib/supabase'
 import { rankBook } from '@/lib/sns/ranker'
@@ -46,9 +46,51 @@ export async function GET(request: NextRequest) {
   const chain = Math.min(Math.max(parseInt(request.nextUrl.searchParams.get('chain') || '0', 10), 0), 2000)
   const prevRemaining = parseInt(request.nextUrl.searchParams.get('prev') || '-1', 10)
   const stall = Math.min(Math.max(parseInt(request.nextUrl.searchParams.get('stall') || '5', 10), 0), 5)
-  const startTime = Date.now()
+  const origin = request.nextUrl.origin
+
+  // 自走ループモード: 即ACKを返し、実処理は応答後に実行（checkと同方式）。
+  // 前リンクからの短時間dispatchがACKを受けて正常完了するためチェーンが安定する。
+  if (chain > 0) {
+    after(async () => {
+      try {
+        const result = await runRerankBatch({ limit, chain, prevRemaining, stall, origin, anthropicApiKey })
+        console.log(`[chain] rerank chain=${chain} processed=${result.processed} remaining=${result.remaining}`)
+      } catch (e) {
+        console.error(`[chain] rerank chain=${chain} error:`, e)
+      }
+    })
+    return NextResponse.json({ accepted: true, mode: 'chain', chain, timestamp: new Date().toISOString() })
+  }
 
   try {
+    const result = await runRerankBatch({ limit, chain: 0, prevRemaining, stall, origin, anthropicApiKey })
+    return NextResponse.json(result)
+  } catch (e) {
+    return NextResponse.json(
+      {
+        error: e instanceof Error ? e.message : String(e),
+        source: 'sns/rerank',
+      },
+      { status: 500 }
+    )
+  }
+}
+
+/**
+ * 1バッチ分の再判定処理本体。
+ */
+async function runRerankBatch(opts: {
+  limit: number
+  chain: number
+  prevRemaining: number
+  stall: number
+  origin: string
+  anthropicApiKey: string
+}): Promise<Record<string, unknown>> {
+  const { limit, chain, prevRemaining, stall, origin, anthropicApiKey } = opts
+  const startTime = Date.now()
+
+  {
     // ルールベース判定された書籍を取得
     const { data: books, error: fetchError } = await supabase
       .from('books')
@@ -58,22 +100,19 @@ export async function GET(request: NextRequest) {
       .limit(limit)
 
     if (fetchError) {
-      return NextResponse.json(
-        { error: `DB取得エラー: ${fetchError.message}` },
-        { status: 500 }
-      )
+      throw new Error(`DB取得エラー: ${fetchError.message}`)
     }
 
     if (!books || books.length === 0) {
       // 残数を確認
       const remaining = await getRemainingCount()
-      return NextResponse.json({
+      return {
         message: 'ルールベース判定の書籍はすべて再判定完了',
         processed: 0,
         remaining,
         source: 'sns/rerank',
         timestamp: new Date().toISOString(),
-      })
+      }
     }
 
     const results: Array<{
@@ -175,14 +214,14 @@ export async function GET(request: NextRequest) {
         chained = `rerank(chain=${chain - 1})`
         try {
           await fetch(
-            `${request.nextUrl.origin}/api/sns/rerank?limit=${limit}&chain=${chain - 1}&prev=${remaining}&stall=${newStall}&t=${Date.now()}`,
+            `${origin}/api/sns/rerank?limit=${limit}&chain=${chain - 1}&prev=${remaining}&stall=${newStall}&t=${Date.now()}`,
             { signal: AbortSignal.timeout(1200) }
           )
-        } catch { /* abort想定内 — 送信済みなら処理は継続される */ }
+        } catch { /* abort想定内 — 受け側は即ACKを返すため処理は継続される */ }
       }
     }
 
-    return NextResponse.json({
+    return {
       processed: results.length,
       remaining,
       results,
@@ -190,16 +229,7 @@ export async function GET(request: NextRequest) {
       source: 'sns/rerank',
       elapsedMs: Date.now() - startTime,
       timestamp: new Date().toISOString(),
-    })
-  } catch (e) {
-    return NextResponse.json(
-      {
-        error: e instanceof Error ? e.message : String(e),
-        source: 'sns/rerank',
-        elapsedMs: Date.now() - startTime,
-      },
-      { status: 500 }
-    )
+    }
   }
 }
 
