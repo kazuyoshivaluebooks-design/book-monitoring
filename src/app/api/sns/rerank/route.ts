@@ -126,9 +126,12 @@ async function runRerankBatch(opts: {
       error?: string
     }> = []
 
+    // 自走ループ時は次リンク送信の時間を確保するため早めに打ち切る
+    const loopBudget = chain > 0 ? 5800 : 7000
+
     for (const book of books) {
-      // タイムアウト防止: 7秒で打ち切り
-      if (Date.now() - startTime > 7000) break
+      // タイムアウト防止
+      if (Date.now() - startTime > loopBudget) break
 
       try {
         const snsData: SnsData = book.sns_data || {}
@@ -153,7 +156,8 @@ async function runRerankBatch(opts: {
           rawSearchResults,
           anthropicApiKey,
           // 再判定は検索ステップがない分、Claude判定に時間を割ける
-          Math.max(Math.min(8500 - (Date.now() - startTime), 7000), 1500)
+          // （自走ループ時は次リンク送信分を差し引く）
+          Math.max(Math.min((chain > 0 ? 6800 : 8500) - (Date.now() - startTime), 7000), 1500)
         )
 
         // 再判定であることを明記

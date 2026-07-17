@@ -376,7 +376,10 @@ async function runCheckBatch(opts: {
   // 締め切り制御: Vercelの10秒制限で関数ごと殺されると全結果が失われるため、
   // 締め切り時点で未完了の本は段階的省略で完了させ、完了分だけ確実に返す。
   // 自走ループ時は次リンク送信の時間(約1.3秒)を確保するため締め切りを前倒し。
-  const DEADLINE_MS = chain > 0 ? 7200 : 8300
+  // 自走ループ時: ACK応答(0.2s) + クレーム + 処理 + 集計(0.3s) + 次リンク送信(1.2s)
+  // の合計が10秒に収まるよう、処理の締め切りを6秒に抑える（時間不足の本は
+  // 段階的省略で完了し、ルールベースになった分は後段のrerankが拾う）
+  const DEADLINE_MS = chain > 0 ? 6000 : 8300
   const budgetLeft = Math.max(DEADLINE_MS - (Date.now() - startTime), 1000)
     type BookResult = Awaited<ReturnType<typeof checkSingleBook>>
     type RaceOutcome = { kind: 'ok'; value: BookResult } | { kind: 'error'; reason: unknown } | { kind: 'deadline' }
